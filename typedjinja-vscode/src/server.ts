@@ -103,7 +103,81 @@ connection.onCompletion(
   }
 );
 
-// (Hover, diagnostics, and go-to-definition coming next)
+// Get the word under the cursor (full variable name)
+function getWordAt(text: string, pos: number): string | null {
+  // Find all variable-like words in the line
+  const regex = /[a-zA-Z_][a-zA-Z0-9_]*/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text))) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (pos >= start && pos <= end) {
+      return match[0];
+    }
+  }
+  return null;
+}
+
+// Provide hover info from the .pyi stub (type and docstring)
+connection.onHover(
+  async (params, _token): Promise<Hover | null> => {
+    logToClient('Hover request received');
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) {
+      logToClient('No document found for hover request');
+      return null;
+    }
+
+    // Find the corresponding .pyi stub
+    const templatePath = url.fileURLToPath(doc.uri);
+    const stubPath = templatePath.replace(/\.jinja$/, '.pyi');
+    logToClient(`Hover: Template path: ${templatePath}`);
+    logToClient(`Hover: Stub path: ${stubPath}`);
+    if (!fs.existsSync(stubPath)) {
+      logToClient('No .pyi stub found for template (hover)');
+      return null;
+    }
+
+    // Parse the stub
+    const stubContent = fs.readFileSync(stubPath, 'utf8');
+    const stubVars = parseStub(stubContent);
+
+    // Get the word under the cursor (improved)
+    const pos = params.position;
+    const line = doc.getText({
+      start: { line: pos.line, character: 0 },
+      end: { line: pos.line, character: Number.MAX_SAFE_INTEGER }
+    });
+    const word = getWordAt(line, pos.character);
+    if (!word) {
+      logToClient('No variable found under cursor for hover');
+      return null;
+    }
+    const varName = word;
+    logToClient(`Hover: Variable under cursor: ${varName}`);
+
+    const info = stubVars[varName];
+    if (!info) {
+      logToClient(`Hover: No info found for variable: ${varName}`);
+      return null;
+    }
+
+    // Show type and docstring in hover
+    let contents = `\`\`\`python\n${varName}: ${info.type}\n\`\`\``;
+    if (info.doc) {
+      contents += `\n\n${info.doc}`;
+    }
+    logToClient(`Hover: Returning hover info for ${varName}`);
+    return {
+      contents: {
+        kind: MarkupKind.Markdown,
+        value: contents
+      }
+    };
+  }
+);
+
+// (Diagnostics and go-to-definition coming next)
 
 documents.listen(connection);
 connection.listen(); 
