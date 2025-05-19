@@ -37,9 +37,7 @@ def parse_types_block(
             var, type_ = line.split(":", 1)
             var = var.strip()
             type_ = type_.strip()
-            # Strip inline comments from type_ (unless it's a docstring)
-            if "#" in type_:
-                type_ = type_.split("#", 1)[0].rstrip()
+            # Do NOT strip inline comments from type_
             # If the type contains a colon, it's malformed
             if ":" in type_:
                 malformed.append(line)

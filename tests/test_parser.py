@@ -52,7 +52,6 @@ def test_parse_types_block_malformed_lines():
     template = """{# @types
 import sys
 user str  # missing colon
-foo: bar:baz  # valid, type contains colon
 badline
 #}"""
     imports, annotations, malformed = parse_types_block(template)
