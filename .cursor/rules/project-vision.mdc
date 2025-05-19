@@ -1,0 +1,38 @@
+---
+description: project vision and moat
+globs: 
+alwaysApply: false
+---
+# CURSOR RULES for TypedJinja
+
+## Main Goal
+
+TypedJinja aims to bring type safety and editor intelligence to Jinja2 templates by allowing developers to annotate available variables and their types (including custom Python types) directly in template files. The project will parse these annotations, generate type stubs or schemas, and provide Language Server Protocol (LSP) support for completions, hover, and type checking in editors.
+
+## Key Principles
+
+- **Type Annotations in Templates:**
+  - Use a special comment block (e.g., `{# @types ... #}`) at the top of Jinja2 templates to declare available variables and their types.
+  - Support both built-in and custom Python types.
+
+- **Schema/Stub Generation:**
+  - Parse type annotations and generate JSON Schema, .d.ts, or .pyi stubs for each template.
+  - Integrate with Python's `typing` and popular libraries (Pydantic, Django models, etc.).
+
+- **LSP Integration:**
+  - Provide completions, hover, and type checking for template variables in supported editors (VS Code, etc.).
+  - LSP implementation may be in TypeScript for best editor compatibility.
+
+- **Extensibility:**
+  - Design for easy extension to new types, frameworks, and editor features.
+
+- **Performance:**
+  - Use caching and incremental parsing to keep editor feedback fast.
+
+## Development Guidelines
+
+- Write clear, well-documented code and tests.
+- Prefer Python for core parsing and schema generation; TypeScript for LSP/editor integration.
+- Keep the codebase modular: separate parsing, schema, and LSP logic.
+- Document all annotation syntax and usage in the README.
+- Prioritize developer experience: fast feedback, clear errors, and easy onboarding. 
