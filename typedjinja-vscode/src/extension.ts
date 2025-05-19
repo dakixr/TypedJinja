@@ -79,6 +79,10 @@ export function activate(context: vscode.ExtensionContext) {
           outputChannel.appendLine(`[Stub Generation Error] ${stderr || err.message}`);
         } else {
           outputChannel.appendLine(`[Stub Generated] ${stdout || 'Success.'}`);
+          // Notify the LSP server to revalidate diagnostics
+          if (client) {
+            client.sendNotification('typedjinja/revalidate', document.uri.toString());
+          }
         }
       });
     }
