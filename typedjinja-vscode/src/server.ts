@@ -153,7 +153,6 @@ function getJediCompletions(stubContent: string, expression: string, cursorLine:
   const col = codeLines[lineCount - 1].length; // after the dot
 
   // Call the Python script as a module using -m
-  // Convert the script path to a module path (e.g., src/typedjinja/jedi_complete.py -> typedjinja.jedi_complete)
   const jediModule = 'typedjinja.jedi_complete';
   const pythonExec = process.env.TYPEDJINJA_PYTHON_PATH || 'python3';
   const result = spawnSync(pythonExec, ['-m', jediModule, String(lineCount), String(col)], { input: code, encoding: 'utf8' });

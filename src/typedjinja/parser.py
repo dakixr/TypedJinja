@@ -50,3 +50,30 @@ def parse_types_block(
             continue
         malformed.append(line)
     return imports, annotations, malformed
+
+
+def parse_macro_blocks(template_content: str) -> list[dict[str, str | None]]:
+    """
+    Extract all macro annotation blocks from the template.
+    Returns a list of dicts: {name, params, docstring}
+    """
+    macro_pattern = re.compile(r"\{#\s*@typedmacro(.*?)#\}", re.DOTALL)
+    blocks = macro_pattern.findall(template_content)
+    macros = []
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]  # noqa: E741
+        if not lines:
+            continue
+        # First non-empty line: signature
+        sig_line = lines[0]
+        docstring = None
+        if len(lines) > 1:
+            docstring = " ".join(lines[1:])
+        # Parse signature: e.g. one_macro(name: str, x: int = 0)
+        m = re.match(r"([a-zA-Z_][a-zA-Z0-9_]*)\((.*)\)", sig_line)
+        if not m:
+            continue
+        name = m.group(1)
+        params = m.group(2)
+        macros.append({"name": name, "params": params, "docstring": docstring})
+    return macros
