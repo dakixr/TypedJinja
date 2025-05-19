@@ -12,13 +12,13 @@ TypedJinja brings type safety and editor intelligence to Jinja2 templates by all
 
 - **Stub Generation:**
   - Parse type annotations and generate `.pyi` stubs for each template.
-  - Stubs are placed in a `__pycache__` directory next to the template to avoid polluting the main source tree.
+  - Stubs are placed in the same directory as the template file, with the same base name and a `.pyi` extension.
   - No runtime Python modules are generated; this is a static analysis and developer tooling solution only.
 
 - **LSP/Editor Integration:**
   - `.pyi` stubs enable completions, hover, and type checking for template variables in supported editors (VS Code, PyCharm, etc.).
   - LSP implementation may be in TypeScript for best editor compatibility.
-  - Users may need to configure their editor or type checker to include `__pycache__` in the search path for stubs.
+  - Editors and type checkers will automatically discover stubs placed next to the template files.
 
 - **Extensibility:**
   - Designed for easy extension to new types, frameworks, and editor features.
@@ -51,10 +51,10 @@ TypedJinja brings type safety and editor intelligence to Jinja2 templates by all
    ```sh
    python -m typedjinja path/to/template.jinja
    ```
-   This creates `__pycache__/template.pyi` next to your template.
+   This creates `path/to/template.pyi` in the same directory as your template.
 
 4. **Editor Integration:**
-   - Configure your editor or type checker (e.g., mypy, Pyright) to recognize stubs in `__pycache__`.
+   - Editors and type checkers (e.g., mypy, Pyright, PyCharm) will automatically use `.pyi` stubs placed next to your template files.
    - Enjoy completions and type checking for template variables!
 
 ### Development Guidelines
