@@ -1,12 +1,9 @@
 {# @types
 from datetime import datetime
-from mymodule import User
 
-# User info
-data: User
-"""The creation time"""
 created_at: datetime
+data: dict[str, str]
 #}
 
-Hello, {{ data.name }}!
+Hello, {{ data["name"] }}!
 Your account was created at {{ created_at }}. 

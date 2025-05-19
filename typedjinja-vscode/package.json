@@ -1,0 +1,42 @@
+{
+  "name": "typedjinja-vscode",
+  "displayName": "TypedJinja",
+  "description": "LSP support for type-safe Jinja2 templates using TypedJinja.",
+  "version": "0.0.1",
+  "publisher": "your-publisher-name",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./lib/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "jinja",
+        "aliases": [
+          "Jinja",
+          "jinja"
+        ],
+        "extensions": [
+          ".jinja"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "tsc -p ./",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.19",
+    "@types/vscode": "^1.100.0",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}
