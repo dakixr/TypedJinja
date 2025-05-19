@@ -109,13 +109,22 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
   };
 });
 
-// Helper: Extract the full expression before the dot at the cursor
-function getExpressionBeforeDot(line: string, cursor: number): string | null {
-  // Find the last expression ending with a dot before the cursor
-  // e.g. user.get_something().to_dict().
+// Helper: Extract the base expression and partial attribute before the cursor
+function getExprAndPartialAttr(line: string, cursor: number): { expr: string, partial: string } | null {
+  // Match patterns like: a.up|, foo.bar.baz|, etc.
+  // Extracts base expression and partial attribute
   const before = line.slice(0, cursor);
-  const match = before.match(/([a-zA-Z0-9_\.\)\(\[\]]+)\.$/);
-  return match ? match[1] : null;
+  // Try to match: expr(.partial)?
+  const match = before.match(/([a-zA-Z0-9_\.\)\(\[\]]*)\.([a-zA-Z0-9_]*)$/);
+  if (match) {
+    return { expr: match[1], partial: match[2] };
+  }
+  // If just a variable/expression (no dot), e.g., a|, foo|
+  const matchVar = before.match(/([a-zA-Z0-9_\)\(\[\]]+)$/);
+  if (matchVar) {
+    return { expr: matchVar[1], partial: '' };
+  }
+  return null;
 }
 
 // Helper: Run jedi and get completions for the target
@@ -194,20 +203,23 @@ connection.onCompletion(
     logToClient(`Line text: '${lineText}'`);
     logToClient(`Cursor position: ${cursor}`);
 
-    // Check for nested member completion (expression ending with dot)
-    const expr = getExpressionBeforeDot(lineText, cursor);
-    if (expr) {
-      logToClient(`Detected nested member completion for expression: ${expr}`);
+    // Enhanced: Try to extract base expression and partial attribute
+    const exprAndPartial = getExprAndPartialAttr(lineText, cursor);
+    if (exprAndPartial) {
+      const { expr, partial } = exprAndPartial;
+      logToClient(`Detected member/partial completion for expr: '${expr}', partial: '${partial}'`);
       // Compose code with dot for Jedi
-      const completions = getJediCompletions(stubContent, expr, 0, 0); // line/col are now handled inside helper
+      const completions = getJediCompletions(stubContent, expr, 0, 0); // line/col handled in helper
       logToClient(`Jedi completions: ${JSON.stringify(completions)}`);
-      return completions.map(item => ({
+      // Filter completions by partial
+      const filtered = partial
+        ? completions.filter(item => item.name.startsWith(partial))
+        : completions;
+      return filtered.map(item => ({
         label: item.name,
         kind: CompletionItemKind.Field,
         documentation: item.docstring ? { kind: MarkupKind.Markdown, value: item.docstring } : undefined
       }));
-    } else {
-      logToClient('Not a member completion (no expression ending with dot before cursor)');
     }
 
     // Default: top-level variable completions
