@@ -1,0 +1,10 @@
+---
+description: 
+globs: *.py
+alwaysApply: false
+---
+# Python Rules
+
+## Python Type Hints
+- All Python files must use modern type hints (Python 3.12+ syntax, e.g., `list[str]`, not `List[str]`).
+- do not use relative imports
