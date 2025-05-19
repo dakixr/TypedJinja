@@ -27,6 +27,9 @@ def write_pyi_stub_from_template(
     pyi_path = Path(pyi_path)
     content = template_path.read_text(encoding="utf-8")
     imports, annotations, malformed = parse_types_block(content)
+    if not imports and not annotations:
+        # Do not create a stub if there is no @types block
+        return
     if malformed:
         raise ValueError(f"Malformed type annotation lines: {malformed}")
     stub = generate_pyi_stub(imports, annotations)
