@@ -27,17 +27,20 @@ async function getPythonInterpreterPath(): Promise<string | null> {
   return pythonPath;
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   outputChannel.appendLine('Activating TypedJinja extension...');
   // Path to the server module (now inside the extension)
   const serverModule = context.asAbsolutePath(
     path.join('lib', 'server.js')
   );
 
+  // Get Python interpreter path
+  const pythonPath = await getPythonInterpreterPath();
+
   // Server options
   const serverOptions: ServerOptions = {
-    run: { module: serverModule, transport: TransportKind.stdio },
-    debug: { module: serverModule, transport: TransportKind.stdio }
+    run: { module: serverModule, transport: TransportKind.stdio, options: { env: { ...process.env, TYPEDJINJA_PYTHON_PATH: pythonPath } } },
+    debug: { module: serverModule, transport: TransportKind.stdio, options: { env: { ...process.env, TYPEDJINJA_PYTHON_PATH: pythonPath } } }
   };
 
   // Client options

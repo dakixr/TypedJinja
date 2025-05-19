@@ -12,14 +12,13 @@ import {
   MarkupKind,
   Diagnostic,
   DiagnosticSeverity,
-  Location,
-  Position,
-  Range
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as url from 'url';
+import { spawnSync } from 'child_process';
+import * as process from 'process';
 
 // Create a connection for the server
 const connection = createConnection(ProposedFeatures.all);
@@ -50,6 +49,51 @@ function parseStub(stubContent: string) {
   return result;
 }
 
+// Parse class definitions and their attributes from a .pyi stub
+function parseClasses(stubContent: string) {
+  // Returns: { [className: string]: { [attr: string]: { type: string, doc?: string } } }
+  const classes: Record<string, Record<string, { type: string, doc?: string }>> = {};
+  const lines = stubContent.split('\n');
+  let currentClass: string | null = null;
+  let indent: number | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const classMatch = line.match(/^class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:/);
+    if (classMatch) {
+      currentClass = classMatch[1];
+      classes[currentClass] = {};
+      indent = null;
+      continue;
+    }
+    if (currentClass) {
+      // Find the indentation of the first attribute
+      if (indent === null) {
+        const m = line.match(/^(\s+)/);
+        if (m) indent = m[1].length;
+        else if (line.trim() === '') continue;
+        else { currentClass = null; continue; }
+      }
+      // Only parse lines with the same indent
+      if (line.startsWith(' '.repeat(indent))) {
+        const attrLine = line.slice(indent);
+        const attrMatch = attrLine.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^\#]+?)(?:\s*#\s*(.*))?$/);
+        if (attrMatch) {
+          classes[currentClass][attrMatch[1]] = {
+            type: attrMatch[2].trim(),
+            doc: attrMatch[3]?.trim()
+          };
+        }
+      } else if (line.trim() === '') {
+        continue;
+      } else {
+        currentClass = null;
+        indent = null;
+      }
+    }
+  }
+  return classes;
+}
+
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   logToClient('TypedJinja LSP server initialized');
   return {
@@ -64,6 +108,53 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
     }
   };
 });
+
+// Helper: Extract the full expression before the dot at the cursor
+function getExpressionBeforeDot(line: string, cursor: number): string | null {
+  // Find the last expression ending with a dot before the cursor
+  // e.g. user.get_something().to_dict().
+  const before = line.slice(0, cursor);
+  const match = before.match(/([a-zA-Z0-9_\.\)\(\[\]]+)\.$/);
+  return match ? match[1] : null;
+}
+
+// Helper: Run jedi and get completions for the target
+function getJediCompletions(stubContent: string, expression: string, cursorLine: number, cursorCol: number): any[] {
+  // Compose the code as before
+  const lines = stubContent.split('\n');
+  const importLines = lines.filter(l => l.trim().startsWith('import') || l.trim().startsWith('from '));
+  const varLines = lines.filter(l => l.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:/));
+  const varDecls = varLines.map(l => l.split('#')[0].trim());
+  // For member completions, append a dot and set the cursor after the dot
+  const code = [
+    ...importLines,
+    ...varDecls,
+    `__typedjinja_completion_target__ = ${expression}.`
+  ].join('\n');
+  const codeLines = code.split('\n');
+  const lineCount = codeLines.length; // 1-based for Jedi
+  const col = codeLines[lineCount - 1].length; // after the dot
+
+  // Call the Python script as a module using -m
+  // Convert the script path to a module path (e.g., src/typedjinja/jedi_complete.py -> typedjinja.jedi_complete)
+  const jediModule = 'typedjinja.jedi_complete';
+  const pythonExec = process.env.TYPEDJINJA_PYTHON_PATH || 'python3';
+  const result = spawnSync(pythonExec, ['-m', jediModule, String(lineCount), String(col)], { input: code, encoding: 'utf8' });
+
+  if (result.error) {
+    logToClient(`[ERROR] Jedi error: ${result.error}`);
+    return [];
+  }
+  if (result.stderr) {
+    logToClient(`[ERROR] Jedi stderr: ${result.stderr}`);
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch (e) {
+    logToClient(`[ERROR] Failed to parse Jedi output: ${result.stdout}`);
+    return [];
+  }
+}
 
 // Provide completions from the .pyi stub (with type and docstring)
 connection.onCompletion(
@@ -87,7 +178,39 @@ connection.onCompletion(
 
     // Parse the .pyi stub for variable names, types, and docstrings
     const stubContent = fs.readFileSync(stubPath, 'utf8');
+    logToClient('Stub content loaded');
     const stubVars = parseStub(stubContent);
+    logToClient('Parsed stubVars: ' + JSON.stringify(stubVars));
+    const stubClasses = parseClasses(stubContent);
+    logToClient('Parsed stubClasses: ' + JSON.stringify(stubClasses));
+
+    // Get the current line and character
+    const pos = textDocumentPosition.position;
+    const lineText = doc.getText({
+      start: { line: pos.line, character: 0 },
+      end: { line: pos.line, character: Number.MAX_SAFE_INTEGER }
+    });
+    const cursor = pos.character;
+    logToClient(`Line text: '${lineText}'`);
+    logToClient(`Cursor position: ${cursor}`);
+
+    // Check for nested member completion (expression ending with dot)
+    const expr = getExpressionBeforeDot(lineText, cursor);
+    if (expr) {
+      logToClient(`Detected nested member completion for expression: ${expr}`);
+      // Compose code with dot for Jedi
+      const completions = getJediCompletions(stubContent, expr, 0, 0); // line/col are now handled inside helper
+      logToClient(`Jedi completions: ${JSON.stringify(completions)}`);
+      return completions.map(item => ({
+        label: item.name,
+        kind: CompletionItemKind.Field,
+        documentation: item.docstring ? { kind: MarkupKind.Markdown, value: item.docstring } : undefined
+      }));
+    } else {
+      logToClient('Not a member completion (no expression ending with dot before cursor)');
+    }
+
+    // Default: top-level variable completions
     const completions: CompletionItem[] = [];
     for (const [varName, info] of Object.entries(stubVars)) {
       completions.push({
