@@ -15,7 +15,9 @@ def main():
     )
     args = parser.parse_args()
     template_path = args.template
-    output_path = template_path.with_suffix(".pyi")
+    pycache_dir = template_path.parent / "__pycache__"
+    pycache_dir.mkdir(exist_ok=True)
+    output_path = pycache_dir / (template_path.stem + ".pyi")
     try:
         write_pyi_stub_from_template(template_path, output_path)
         print(f"Stub written to {output_path}")

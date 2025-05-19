@@ -185,7 +185,12 @@ connection.onCompletion(
 
     // Find the corresponding .pyi stub
     const templatePath = url.fileURLToPath(doc.uri);
-    const stubPath = templatePath.replace(/\.jinja$/, '.pyi');
+    const stubPath = (() => {
+      const path = require('path');
+      const dir = path.dirname(templatePath);
+      const base = path.basename(templatePath, '.jinja');
+      return path.join(dir, '__pycache__', base + '.pyi');
+    })();
     logToClient(`Template path: ${templatePath}`);
     logToClient(`Stub path: ${stubPath}`);
     if (!fs.existsSync(stubPath)) {
@@ -313,7 +318,12 @@ connection.onHover(
 
     // Find the corresponding .pyi stub
     const templatePath = url.fileURLToPath(doc.uri);
-    const stubPath = templatePath.replace(/\.jinja$/, '.pyi');
+    const stubPath = (() => {
+      const path = require('path');
+      const dir = path.dirname(templatePath);
+      const base = path.basename(templatePath, '.jinja');
+      return path.join(dir, '__pycache__', base + '.pyi');
+    })();
     logToClient(`Hover: Template path: ${templatePath}`);
     logToClient(`Hover: Stub path: ${stubPath}`);
     if (!fs.existsSync(stubPath)) {
