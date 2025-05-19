@@ -110,16 +110,24 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 });
 
 // Helper: Extract the base expression and partial attribute before the cursor
-function getExprAndPartialAttr(line: string, cursor: number): { expr: string, partial: string } | null {
-  // Match patterns like: a.up|, foo.bar.baz|, etc.
-  // Extracts base expression and partial attribute
+function getExprAndPartialAttr(line: string, cursor: number): { expr: string, partial: string, inFnArgs?: boolean } | null {
   const before = line.slice(0, cursor);
-  // Try to match: expr(.partial)?
+  // Case 1: member/attribute completion (dot)
   const match = before.match(/([a-zA-Z0-9_\.\)\(\[\]]*)\.([a-zA-Z0-9_]*)$/);
   if (match) {
     return { expr: match[1], partial: match[2] };
   }
-  // If just a variable/expression (no dot), e.g., a|, foo|
+  // Case 2: inside function arguments, e.g. foo.bar(|) or foo.bar(arg1, |
+  // Find the last open paren before the cursor
+  const openIdx = before.lastIndexOf('(');
+  if (openIdx !== -1) {
+    // Find the function expression before the paren
+    const fnExprMatch = before.slice(0, openIdx).match(/([a-zA-Z0-9_\.\)\(\[\]]+)$/);
+    if (fnExprMatch) {
+      return { expr: fnExprMatch[1], partial: '', inFnArgs: true };
+    }
+  }
+  // Case 3: just a variable/expression (no dot)
   const matchVar = before.match(/([a-zA-Z0-9_\)\(\[\]]+)$/);
   if (matchVar) {
     return { expr: matchVar[1], partial: '' };
@@ -206,12 +214,53 @@ connection.onCompletion(
     // Enhanced: Try to extract base expression and partial attribute
     const exprAndPartial = getExprAndPartialAttr(lineText, cursor);
     if (exprAndPartial) {
-      const { expr, partial } = exprAndPartial;
-      logToClient(`Detected member/partial completion for expr: '${expr}', partial: '${partial}'`);
-      // Compose code with dot for Jedi
+      const { expr, partial, inFnArgs } = exprAndPartial;
+      logToClient(`Detected completion for expr: '${expr}', partial: '${partial}', inFnArgs: ${inFnArgs}`);
+      // If in function args, ask Jedi for argument completions
+      if (inFnArgs) {
+        // Compose code for Jedi: put cursor inside the function call
+        const lines = stubContent.split('\n');
+        const importLines = lines.filter(l => l.trim().startsWith('import') || l.trim().startsWith('from '));
+        const varLines = lines.filter(l => l.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:/));
+        const varDecls = varLines.map(l => l.split('#')[0].trim());
+        // Place the cursor inside the function call
+        const code = [
+          ...importLines,
+          ...varDecls,
+          `__typedjinja_completion_target__ = ${expr}(`
+        ].join('\n');
+        const codeLines = code.split('\n');
+        const lineCount = codeLines.length;
+        const col = codeLines[lineCount - 1].length; // after the '('
+        const jediModule = 'typedjinja.jedi_complete';
+        const pythonExec = process.env.TYPEDJINJA_PYTHON_PATH || 'python3';
+        const env = { ...process.env, TYPEDJINJA_SIGNATURE_HELP: '1' };
+        const result = spawnSync(pythonExec, ['-m', jediModule, String(lineCount), String(col)], { input: code, encoding: 'utf8', env });
+        if (result.error) {
+          logToClient(`[ERROR] Jedi error: ${result.error}`);
+          return [];
+        }
+        if (result.stderr) {
+          logToClient(`[ERROR] Jedi stderr: ${result.stderr}`);
+        }
+        let params = [];
+        try {
+          params = JSON.parse(result.stdout);
+        } catch (e) {
+          logToClient(`[ERROR] Failed to parse Jedi output: ${result.stdout}`);
+          return [];
+        }
+        // Show function parameters as completion items
+        return params.map((param: any) => ({
+          label: param.name + (param.annotation ? `: ${param.annotation}` : ''),
+          kind: CompletionItemKind.Variable,
+          detail: param.default ? `default=${param.default}` : undefined,
+          documentation: param.docstring ? { kind: MarkupKind.Markdown, value: param.docstring } : undefined
+        }));
+      }
+      // Default: member/attribute completion
       const completions = getJediCompletions(stubContent, expr, 0, 0); // line/col handled in helper
       logToClient(`Jedi completions: ${JSON.stringify(completions)}`);
-      // Filter completions by partial
       const filtered = partial
         ? completions.filter(item => item.name.startsWith(partial))
         : completions;
