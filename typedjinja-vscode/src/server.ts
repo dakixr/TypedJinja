@@ -52,6 +52,20 @@ function getExprAndPartialAttr(
   if (node.type === 'variable' || node.type === 'identifier') {
     return { expr: node.text, partial: '', inFnArgs: false };
   }
+  // Fallback for attribute access inside a render_expression
+  if (node.type === 'render_expression') {
+    const lineText = doc.getText({
+      start: { line: position.line, character: 0 },
+      end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
+    });
+    const before = lineText.slice(0, position.character);
+    const m = before.match(/([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z0-9_]*)$/);
+    if (m) {
+      const [, obj, part] = m;
+      logToClient(`[Fallback] attribute completion for obj='${obj}', partial='${part}'`);
+      return { expr: obj, partial: part, inFnArgs: false };
+    }
+  }
   return null;
 }
 
@@ -67,6 +81,19 @@ function getWordAt(
     return node.text;
   }
   return null;
+}
+
+// Parse .pyi stub file to get top-level variable names, types, docs
+function parseStubFile(pyiPath: string): Record<string, { type: string; doc?: string }> {
+  const content = fs.readFileSync(pyiPath, 'utf8');
+  const result: Record<string, { type: string; doc?: string }> = {};
+  for (const line of content.split('\n')) {
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^\#]+?)(?:\s*#\s*(.*))?$/);
+    if (m) {
+      result[m[1]] = { type: m[2].trim(), doc: m[3]?.trim() };
+    }
+  }
+  return result;
 }
 
 connection.onInitialize((_params: InitializeParams): InitializeResult => {
@@ -107,8 +134,15 @@ connection.onCompletion(
     const pos = textDocumentPosition.position;
     const ctx = getExprAndPartialAttr(doc, pos);
     if (!ctx) {
-      logToClient('No Tree-sitter context for completions');
-      return [];
+      logToClient('No Tree-sitter context for completions, falling back to top-level variables');
+      // Fallback: parse stub for top-level variables
+      const stubVars = parseStubFile(stubPath);
+      return Object.entries(stubVars).map(([name, info]) => ({
+        label: name,
+        kind: CompletionItemKind.Variable,
+        detail: info.type,
+        documentation: info.doc ? { kind: MarkupKind.Markdown, value: info.doc } : undefined,
+      }));
     }
 
     const { expr, partial, inFnArgs } = ctx;
@@ -118,8 +152,12 @@ connection.onCompletion(
     const args = inFnArgs
       ? ['-m', 'typedjinja.lsp_server', mode, stubPath, expr, String(pos.line + 1), String(pos.character)]
       : ['-m', 'typedjinja.lsp_server', mode, stubPath, expr, String(pos.line + 1), String(pos.character)];
+    // Debug: log the CLI invocation
+    logToClient(`[CLI] Invoking: ${pythonExec} ${mode} stub at expr: ${expr}`);
+    logToClient(`[CLI] Args: ${args.join(' ')}`);
     const result = spawnSync(pythonExec, args, { encoding: 'utf8' });
-
+    logToClient(`[CLI] stdout: ${result.stdout}`);
+    logToClient(`[CLI] stderr: ${result.stderr}`);
     if (result.error) {
       logToClient(`[ERROR] ${result.error}`);
       return [];
@@ -136,16 +174,26 @@ connection.onCompletion(
       return [];
     }
 
-    return items
-      .filter(item => !partial || item.name.startsWith(partial))
-      .map(item => ({
-        label: item.name,
-        kind: inFnArgs ? CompletionItemKind.Variable : CompletionItemKind.Field,
-        detail: item.type ?? undefined,
-        documentation: item.docstring
-          ? { kind: MarkupKind.Markdown, value: item.docstring }
-          : undefined,
-      }));
+    // Filter by partial prefix if present
+    const filtered = partial
+      ? items.filter(item => item.name.startsWith(partial))
+      : items;
+    // Sort: public members before private (leading underscore), then alphabetically
+    const sorted = filtered.slice().sort((a, b) => {
+      const aPrivate = a.name.startsWith('_');
+      const bPrivate = b.name.startsWith('_');
+      if (aPrivate !== bPrivate) return aPrivate ? 1 : -1;
+      return a.name.localeCompare(b.name);
+    });
+    return sorted.map(item => ({
+      label: item.name,
+      kind: inFnArgs ? CompletionItemKind.Variable : CompletionItemKind.Field,
+      detail: item.type ?? undefined,
+      documentation: item.docstring
+        ? { kind: MarkupKind.Markdown, value: item.docstring }
+        : undefined,
+      sortText: `${item.name.startsWith('_') ? '1_' : '0_'}${item.name}`
+    }));
   }
 );
 

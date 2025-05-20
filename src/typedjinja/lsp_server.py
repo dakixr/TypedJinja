@@ -48,11 +48,15 @@ def main():
             f"__typedjinja_target__ = {args.expr}{'.' if args.mode=='complete' else '('}"
         ]
     )
+    # Compute cursor position at end of generated code
+    code_lines = code.split("\n")
+    line_num = len(code_lines)
+    col_num = len(code_lines[-1])
     script = jedi.Script(code, path=str(stub_path))
 
     try:
         if args.mode == "signature":
-            sigs = script.get_signatures(args.line, args.column)
+            sigs = script.get_signatures(line_num, col_num)
             res = []
             if sigs:
                 sig = sigs[0]
@@ -70,7 +74,7 @@ def main():
                     )
             print(json.dumps(res))
         else:
-            comps = script.complete(args.line, args.column)
+            comps = script.complete(line_num, col_num)
             print(
                 json.dumps(
                     [
