@@ -7,6 +7,6 @@ data: dict[str, str]
 {% from "another_template.jinja" import one_macro %}
 
 Hello, {{ data["name"] }}!
-Your account was created at {{ created_at.strftime("%Y-%m-%d") }}
+Your account was created at {{ created_at }}
 
 {{ one_macro(data["name"]) }}

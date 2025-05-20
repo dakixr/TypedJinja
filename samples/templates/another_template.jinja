@@ -2,6 +2,9 @@
     one_macro(name: str)
     This is a description of the macro
 #}
-{% macro one_macro(name) %}
+{% macro one_macro(name = "world", pepe = "pepe") %}
     Hello, {{ name }}!
 {% endmacro %}
+
+
+{{ one_macro("world") }}
