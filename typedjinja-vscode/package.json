@@ -37,6 +37,9 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-jinja": "link:../tree-sitter-jinja2",
+    "tree-sitter-jinja2": "link:../tree-sitter-jinja2",
     "vscode-languageclient": "^9.0.1"
   }
 }

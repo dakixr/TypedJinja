@@ -19,6 +19,9 @@ import * as fs from 'fs';
 import * as url from 'url';
 import { spawnSync } from 'child_process';
 import * as process from 'process';
+import Parser from 'tree-sitter';
+// @ts-expect-error: No type declarations for native tree-sitter-jinja2 module
+import Jinja2 from 'tree-sitter-jinja2';
 
 // Create a connection for the server
 const connection = createConnection(ProposedFeatures.all);
@@ -108,29 +111,27 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
   };
 });
 
-// Helper: Extract the base expression and partial attribute before the cursor
-function getExprAndPartialAttr(line: string, cursor: number): { expr: string, partial: string, inFnArgs?: boolean } | null {
-  const before = line.slice(0, cursor);
-  // Case 1: member/attribute completion (dot)
-  const match = before.match(/([a-zA-Z0-9_\.\)\(\[\]]*)\.([a-zA-Z0-9_]*)$/);
-  if (match) {
-    return { expr: match[1], partial: match[2] };
+// Initialize Tree-sitter parser for Jinja2
+const tsParser = new Parser();
+tsParser.setLanguage(Jinja2);
+
+// Helper: Extract the base expression and partial attribute before the cursor using Tree-sitter
+// (Regex-based logic for Jinja2 template parsing is now deprecated and removed)
+function getExprAndPartialAttr(doc: TextDocument, position: { line: number, character: number }): { expr: string, partial: string, inFnArgs?: boolean } | null {
+  const tree = tsParser.parse(doc.getText());
+  const point = { row: position.line, column: position.character };
+  const node = tree.rootNode.namedDescendantForPosition(point);
+  if (!node) return null;
+  // Log node type for debugging
+  logToClient(`[Tree-sitter] node at cursor: ${node.type} '${node.text}'`);
+  // Example: handle variable, attribute, and function call
+  if (node.type === 'variable') {
+    return { expr: node.text, partial: '' };
   }
-  // Case 2: inside function arguments, e.g. foo.bar(|) or foo.bar(arg1, |
-  // Find the last open paren before the cursor
-  const openIdx = before.lastIndexOf('(');
-  if (openIdx !== -1) {
-    // Find the function expression before the paren
-    const fnExprMatch = before.slice(0, openIdx).match(/([a-zA-Z0-9_\.\)\(\[\]]+)$/);
-    if (fnExprMatch) {
-      return { expr: fnExprMatch[1], partial: '', inFnArgs: true };
-    }
+  if (node.type === 'identifier') {
+    return { expr: node.text, partial: '' };
   }
-  // Case 3: just a variable/expression (no dot)
-  const matchVar = before.match(/([a-zA-Z0-9_\)\(\[\]]+)$/);
-  if (matchVar) {
-    return { expr: matchVar[1], partial: '' };
-  }
+  // TODO: Add more logic as you learn the grammar structure
   return null;
 }
 
@@ -215,7 +216,7 @@ connection.onCompletion(
     logToClient(`Cursor position: ${cursor}`);
 
     // Enhanced: Try to extract base expression and partial attribute
-    const exprAndPartial = getExprAndPartialAttr(lineText, cursor);
+    const exprAndPartial = getExprAndPartialAttr(doc, pos);
     if (exprAndPartial) {
       const { expr, partial, inFnArgs } = exprAndPartial;
       logToClient(`Detected completion for expr: '${expr}', partial: '${partial}', inFnArgs: ${inFnArgs}`);
@@ -289,17 +290,13 @@ connection.onCompletion(
   }
 );
 
-// Get the word under the cursor (full variable name)
-function getWordAt(text: string, pos: number): string | null {
-  // Find all variable-like words in the line
-  const regex = /[a-zA-Z_][a-zA-Z0-9_]*/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text))) {
-    const start = match.index;
-    const end = start + match[0].length;
-    if (pos >= start && pos <= end) {
-      return match[0];
-    }
+// Get the word under the cursor using Tree-sitter
+function getWordAt(doc: TextDocument, position: { line: number, character: number }): string | null {
+  const tree = tsParser.parse(doc.getText());
+  const point = { row: position.line, column: position.character };
+  const node = tree.rootNode.namedDescendantForPosition(point);
+  if (node && (node.type === 'identifier' || node.type === 'variable')) {
+    return node.text;
   }
   return null;
 }
@@ -339,7 +336,7 @@ connection.onHover(
       start: { line: pos.line, character: 0 },
       end: { line: pos.line, character: Number.MAX_SAFE_INTEGER }
     });
-    const word = getWordAt(line, pos.character);
+    const word = getWordAt(doc, pos);
     if (!word) {
       logToClient('No variable found under cursor for hover');
       return null;
