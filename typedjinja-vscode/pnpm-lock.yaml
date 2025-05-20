@@ -12,11 +12,8 @@ importers:
         specifier: ^0.22.4
         version: 0.22.4
       tree-sitter-jinja:
-        specifier: link:../tree-sitter-jinja2
-        version: link:../tree-sitter-jinja2
-      tree-sitter-jinja2:
-        specifier: link:../tree-sitter-jinja2
-        version: link:../tree-sitter-jinja2
+        specifier: link:../tree-sitter-jinja2/tree-sitter-jinja
+        version: link:../tree-sitter-jinja2/tree-sitter-jinja
       vscode-languageclient:
         specifier: ^9.0.1
         version: 9.0.1

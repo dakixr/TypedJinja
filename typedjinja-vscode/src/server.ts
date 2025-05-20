@@ -10,8 +10,6 @@ import {
   TextDocumentSyncKind,
   Hover,
   MarkupKind,
-  Diagnostic,
-  DiagnosticSeverity,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -20,8 +18,7 @@ import * as url from 'url';
 import { spawnSync } from 'child_process';
 import * as process from 'process';
 import Parser from 'tree-sitter';
-// @ts-expect-error: No type declarations for native tree-sitter-jinja2 module
-import Jinja2 from 'tree-sitter-jinja2';
+import Jinja2 from 'tree-sitter-jinja';
 
 // Create a connection for the server
 const connection = createConnection(ProposedFeatures.all);
@@ -36,262 +33,33 @@ function logToClient(msg: string) {
   console.log('[TypedJinja LSP]', msg);
 }
 
-// Parse .pyi lines like: var: type  # doc
-function parseStub(stubContent: string) {
-  const result: Record<string, { type: string, doc?: string }> = {};
-  for (const line of stubContent.split('\n')) {
-    // Match: var: type  # docstring
-    const match = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^\#]+?)(?:\s*#\s*(.*))?$/);
-    if (match) {
-      result[match[1]] = {
-        type: match[2].trim(),
-        doc: match[3]?.trim()
-      };
-    }
-  }
-  return result;
-}
-
-// Parse class definitions and their attributes from a .pyi stub
-function parseClasses(stubContent: string) {
-  // Returns: { [className: string]: { [attr: string]: { type: string, doc?: string } } }
-  const classes: Record<string, Record<string, { type: string, doc?: string }>> = {};
-  const lines = stubContent.split('\n');
-  let currentClass: string | null = null;
-  let indent: number | null = null;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const classMatch = line.match(/^class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:/);
-    if (classMatch) {
-      currentClass = classMatch[1];
-      classes[currentClass] = {};
-      indent = null;
-      continue;
-    }
-    if (currentClass) {
-      // Find the indentation of the first attribute
-      if (indent === null) {
-        const m = line.match(/^(\s+)/);
-        if (m) indent = m[1].length;
-        else if (line.trim() === '') continue;
-        else { currentClass = null; continue; }
-      }
-      // Only parse lines with the same indent
-      if (line.startsWith(' '.repeat(indent))) {
-        const attrLine = line.slice(indent);
-        const attrMatch = attrLine.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^\#]+?)(?:\s*#\s*(.*))?$/);
-        if (attrMatch) {
-          classes[currentClass][attrMatch[1]] = {
-            type: attrMatch[2].trim(),
-            doc: attrMatch[3]?.trim()
-          };
-        }
-      } else if (line.trim() === '') {
-        continue;
-      } else {
-        currentClass = null;
-        indent = null;
-      }
-    }
-  }
-  return classes;
-}
-
-connection.onInitialize((params: InitializeParams): InitializeResult => {
-  logToClient('TypedJinja LSP server initialized');
-  return {
-    capabilities: {
-      textDocumentSync: TextDocumentSyncKind.Incremental,
-      completionProvider: {
-        resolveProvider: false
-      },
-      hoverProvider: true,
-      definitionProvider: true
-    }
-  };
-});
-
-// Initialize Tree-sitter parser for Jinja2
+// Init Tree-sitter for Jinja2
 const tsParser = new Parser();
+// @ts-ignore: native binding has no TS types, cast to Language
 tsParser.setLanguage(Jinja2);
 
-// Helper: Extract the base expression and partial attribute before the cursor using Tree-sitter
-// (Regex-based logic for Jinja2 template parsing is now deprecated and removed)
-function getExprAndPartialAttr(doc: TextDocument, position: { line: number, character: number }): { expr: string, partial: string, inFnArgs?: boolean } | null {
+// Extract base expr / partial via Tree-sitter
+function getExprAndPartialAttr(
+  doc: TextDocument,
+  position: { line: number; character: number }
+): { expr: string; partial: string; inFnArgs?: boolean } | null {
   const tree = tsParser.parse(doc.getText());
   const point = { row: position.line, column: position.character };
   const node = tree.rootNode.namedDescendantForPosition(point);
   if (!node) return null;
-  // Log node type for debugging
   logToClient(`[Tree-sitter] node at cursor: ${node.type} '${node.text}'`);
-  // Example: handle variable, attribute, and function call
-  if (node.type === 'variable') {
-    return { expr: node.text, partial: '' };
+  // simple cases; extend with your grammar
+  if (node.type === 'variable' || node.type === 'identifier') {
+    return { expr: node.text, partial: '', inFnArgs: false };
   }
-  if (node.type === 'identifier') {
-    return { expr: node.text, partial: '' };
-  }
-  // TODO: Add more logic as you learn the grammar structure
   return null;
 }
 
-// Helper: Run jedi and get completions for the target
-function getJediCompletions(stubContent: string, expression: string, cursorLine: number, cursorCol: number): any[] {
-  // Compose the code as before
-  const lines = stubContent.split('\n');
-  const importLines = lines.filter(l => l.trim().startsWith('import') || l.trim().startsWith('from '));
-  const varLines = lines.filter(l => l.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:/));
-  const varDecls = varLines.map(l => l.split('#')[0].trim());
-  // For member completions, append a dot and set the cursor after the dot
-  const code = [
-    ...importLines,
-    ...varDecls,
-    `__typedjinja_completion_target__ = ${expression}.`
-  ].join('\n');
-  const codeLines = code.split('\n');
-  const lineCount = codeLines.length; // 1-based for Jedi
-  const col = codeLines[lineCount - 1].length; // after the dot
-
-  // Call the Python script as a module using -m
-  const jediModule = 'typedjinja.jedi_complete';
-  const pythonExec = process.env.PYTHON_PATH || 'python3';
-  const result = spawnSync(pythonExec, ['-m', jediModule, String(lineCount), String(col)], { input: code, encoding: 'utf8' });
-
-  if (result.error) {
-    logToClient(`[ERROR] Jedi error: ${result.error}`);
-    return [];
-  }
-  if (result.stderr) {
-    logToClient(`[ERROR] Jedi stderr: ${result.stderr}`);
-  }
-  try {
-    return JSON.parse(result.stdout);
-  } catch (e) {
-    logToClient(`[ERROR] Failed to parse Jedi output: ${result.stdout}`);
-    return [];
-  }
-}
-
-// Provide completions from the .pyi stub (with type and docstring)
-connection.onCompletion(
-  async (textDocumentPosition: TextDocumentPositionParams): Promise<CompletionItem[]> => {
-    logToClient('Completion request received');
-    const doc = documents.get(textDocumentPosition.textDocument.uri);
-    if (!doc) {
-      logToClient('No document found for completion request');
-      return [];
-    }
-
-    // Find the corresponding .pyi stub
-    const templatePath = url.fileURLToPath(doc.uri);
-    const stubPath = (() => {
-      const path = require('path');
-      const dir = path.dirname(templatePath);
-      const base = path.basename(templatePath, '.jinja');
-      return path.join(dir, '__pycache__', base + '.pyi');
-    })();
-    logToClient(`Template path: ${templatePath}`);
-    logToClient(`Stub path: ${stubPath}`);
-    if (!fs.existsSync(stubPath)) {
-      logToClient('No .pyi stub found for template');
-      return [];
-    }
-
-    // Parse the .pyi stub for variable names, types, and docstrings
-    const stubContent = fs.readFileSync(stubPath, 'utf8');
-    logToClient('Stub content loaded');
-    const stubVars = parseStub(stubContent);
-    logToClient('Parsed stubVars: ' + JSON.stringify(stubVars));
-    const stubClasses = parseClasses(stubContent);
-    logToClient('Parsed stubClasses: ' + JSON.stringify(stubClasses));
-
-    // Get the current line and character
-    const pos = textDocumentPosition.position;
-    const lineText = doc.getText({
-      start: { line: pos.line, character: 0 },
-      end: { line: pos.line, character: Number.MAX_SAFE_INTEGER }
-    });
-    const cursor = pos.character;
-    logToClient(`Line text: '${lineText}'`);
-    logToClient(`Cursor position: ${cursor}`);
-
-    // Enhanced: Try to extract base expression and partial attribute
-    const exprAndPartial = getExprAndPartialAttr(doc, pos);
-    if (exprAndPartial) {
-      const { expr, partial, inFnArgs } = exprAndPartial;
-      logToClient(`Detected completion for expr: '${expr}', partial: '${partial}', inFnArgs: ${inFnArgs}`);
-      // If in function args, ask Jedi for argument completions
-      if (inFnArgs) {
-        // Compose code for Jedi: put cursor inside the function call
-        const lines = stubContent.split('\n');
-        const importLines = lines.filter(l => l.trim().startsWith('import') || l.trim().startsWith('from '));
-        const varLines = lines.filter(l => l.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:/));
-        const varDecls = varLines.map(l => l.split('#')[0].trim());
-        // Place the cursor inside the function call
-        const code = [
-          ...importLines,
-          ...varDecls,
-          `__typedjinja_completion_target__ = ${expr}(`
-        ].join('\n');
-        const codeLines = code.split('\n');
-        const lineCount = codeLines.length;
-        const col = codeLines[lineCount - 1].length; // after the '('
-        const jediModule = 'typedjinja.jedi_complete';
-        const pythonExec = process.env.PYTHON_PATH || 'python3';
-        const env = { ...process.env, TYPEDJINJA_SIGNATURE_HELP: '1' };
-        const result = spawnSync(pythonExec, ['-m', jediModule, String(lineCount), String(col)], { input: code, encoding: 'utf8', env });
-        if (result.error) {
-          logToClient(`[ERROR] Jedi error: ${result.error}`);
-          return [];
-        }
-        if (result.stderr) {
-          logToClient(`[ERROR] Jedi stderr: ${result.stderr}`);
-        }
-        let params = [];
-        try {
-          params = JSON.parse(result.stdout);
-        } catch (e) {
-          logToClient(`[ERROR] Failed to parse Jedi output: ${result.stdout}`);
-          return [];
-        }
-        // Show function parameters as completion items
-        return params.map((param: any) => ({
-          label: param.name + (param.annotation ? `: ${param.annotation}` : ''),
-          kind: CompletionItemKind.Variable,
-          detail: param.default ? `default=${param.default}` : undefined,
-          documentation: param.docstring ? { kind: MarkupKind.Markdown, value: param.docstring } : undefined
-        }));
-      }
-      // Default: member/attribute completion
-      const completions = getJediCompletions(stubContent, expr, 0, 0); // line/col handled in helper
-      logToClient(`Jedi completions: ${JSON.stringify(completions)}`);
-      const filtered = partial
-        ? completions.filter(item => item.name.startsWith(partial))
-        : completions;
-      return filtered.map(item => ({
-        label: item.name,
-        kind: CompletionItemKind.Field,
-        documentation: item.docstring ? { kind: MarkupKind.Markdown, value: item.docstring } : undefined
-      }));
-    }
-
-    // Default: top-level variable completions
-    const completions: CompletionItem[] = [];
-    for (const [varName, info] of Object.entries(stubVars)) {
-      completions.push({
-        label: varName,
-        kind: CompletionItemKind.Variable,
-        detail: info.type,
-        documentation: info.doc ? { kind: MarkupKind.Markdown, value: info.doc } : undefined
-      });
-    }
-    logToClient(`Returning ${completions.length} completions`);
-    return completions;
-  }
-);
-
-// Get the word under the cursor using Tree-sitter
-function getWordAt(doc: TextDocument, position: { line: number, character: number }): string | null {
+// Find full word under cursor via Tree-sitter
+function getWordAt(
+  doc: TextDocument,
+  position: { line: number; character: number }
+): string | null {
   const tree = tsParser.parse(doc.getText());
   const point = { row: position.line, column: position.character };
   const node = tree.rootNode.namedDescendantForPosition(point);
@@ -301,70 +69,141 @@ function getWordAt(doc: TextDocument, position: { line: number, character: numbe
   return null;
 }
 
-// Provide hover info from the .pyi stub (type and docstring)
+connection.onInitialize((_params: InitializeParams): InitializeResult => {
+  logToClient('TypedJinja LSP server initialized');
+  return {
+    capabilities: {
+      textDocumentSync: TextDocumentSyncKind.Incremental,
+      completionProvider: { resolveProvider: false },
+      hoverProvider: true,
+      definitionProvider: true,
+    },
+  };
+});
+
+// Completions via Python CLI
+connection.onCompletion(
+  async (textDocumentPosition: TextDocumentPositionParams): Promise<CompletionItem[]> => {
+    logToClient('Completion request received');
+    const doc = documents.get(textDocumentPosition.textDocument.uri);
+    if (!doc) {
+      logToClient('No document found for completion request');
+      return [];
+    }
+    const templatePath = url.fileURLToPath(doc.uri);
+    const stubPath = (() => {
+      const path = require('path'),
+        dir = path.dirname(templatePath),
+        base = path.basename(templatePath, '.jinja');
+      return path.join(dir, '__pycache__', base + '.pyi');
+    })();
+    logToClient(`Template path: ${templatePath}`);
+    logToClient(`Stub path: ${stubPath}`);
+    if (!fs.existsSync(stubPath)) {
+      logToClient('No .pyi stub found for template');
+      return [];
+    }
+
+    const pos = textDocumentPosition.position;
+    const ctx = getExprAndPartialAttr(doc, pos);
+    if (!ctx) {
+      logToClient('No Tree-sitter context for completions');
+      return [];
+    }
+
+    const { expr, partial, inFnArgs } = ctx;
+    logToClient(`Expr='${expr}' partial='${partial}' inFnArgs=${inFnArgs}`);
+    const pythonExec = process.env.PYTHON_PATH || 'python3';
+    const mode = inFnArgs ? 'signature' : 'complete';
+    const args = inFnArgs
+      ? ['-m', 'typedjinja.lsp_server', mode, stubPath, expr, String(pos.line + 1), String(pos.character)]
+      : ['-m', 'typedjinja.lsp_server', mode, stubPath, expr, String(pos.line + 1), String(pos.character)];
+    const result = spawnSync(pythonExec, args, { encoding: 'utf8' });
+
+    if (result.error) {
+      logToClient(`[ERROR] ${result.error}`);
+      return [];
+    }
+    if (result.stderr) {
+      logToClient(`[ERROR] ${result.stderr}`);
+    }
+
+    let items: any[];
+    try {
+      items = JSON.parse(result.stdout);
+    } catch (e) {
+      logToClient(`[ERROR] Failed to parse completions: ${result.stdout}`);
+      return [];
+    }
+
+    return items
+      .filter(item => !partial || item.name.startsWith(partial))
+      .map(item => ({
+        label: item.name,
+        kind: inFnArgs ? CompletionItemKind.Variable : CompletionItemKind.Field,
+        detail: item.type ?? undefined,
+        documentation: item.docstring
+          ? { kind: MarkupKind.Markdown, value: item.docstring }
+          : undefined,
+      }));
+  }
+);
+
+// Hover via Python CLI
 connection.onHover(
-  async (params, _token): Promise<Hover | null> => {
+  async (_params, _token): Promise<Hover | null> => {
     logToClient('Hover request received');
-    const doc = documents.get(params.textDocument.uri);
+    const doc = documents.get(_params.textDocument.uri);
     if (!doc) {
       logToClient('No document found for hover request');
       return null;
     }
-
-    // Find the corresponding .pyi stub
     const templatePath = url.fileURLToPath(doc.uri);
     const stubPath = (() => {
-      const path = require('path');
-      const dir = path.dirname(templatePath);
-      const base = path.basename(templatePath, '.jinja');
+      const path = require('path'),
+        dir = path.dirname(templatePath),
+        base = path.basename(templatePath, '.jinja');
       return path.join(dir, '__pycache__', base + '.pyi');
     })();
-    logToClient(`Hover: Template path: ${templatePath}`);
-    logToClient(`Hover: Stub path: ${stubPath}`);
+    logToClient(`Hover stub at: ${stubPath}`);
     if (!fs.existsSync(stubPath)) {
-      logToClient('No .pyi stub found for template (hover)');
       return null;
     }
 
-    // Parse the stub
-    const stubContent = fs.readFileSync(stubPath, 'utf8');
-    const stubVars = parseStub(stubContent);
-
-    // Get the word under the cursor (improved)
-    const pos = params.position;
-    const line = doc.getText({
-      start: { line: pos.line, character: 0 },
-      end: { line: pos.line, character: Number.MAX_SAFE_INTEGER }
-    });
-    const word = getWordAt(doc, pos);
+    const word = getWordAt(doc, _params.position);
     if (!word) {
-      logToClient('No variable found under cursor for hover');
       return null;
     }
-    const varName = word;
-    logToClient(`Hover: Variable under cursor: ${varName}`);
-
-    const info = stubVars[varName];
-    if (!info) {
-      logToClient(`Hover: No info found for variable: ${varName}`);
+    logToClient(`Hover word: ${word}`);
+    const pythonExec = process.env.PYTHON_PATH || 'python3';
+    const result = spawnSync(
+      pythonExec,
+      ['-m', 'typedjinja.lsp_server', 'hover', stubPath, word],
+      { encoding: 'utf8' }
+    );
+    if (result.error || result.stderr) {
+      logToClient(`[ERROR] ${result.error ?? result.stderr}`);
       return null;
     }
 
-    // Show type and docstring in hover
-    let contents = `\`\`\`python\n${varName}: ${info.type}\n\`\`\``;
-    if (info.doc) {
-      contents += `\n\n${info.doc}`;
+    let info: { type?: string; doc?: string } = {};
+    try {
+      info = JSON.parse(result.stdout);
+    } catch {
+      return null;
     }
-    logToClient(`Hover: Returning hover info for ${varName}`);
+    if (!info.type) {
+      return null;
+    }
+
+    const contents =
+      '```python\n' + word + ': ' + info.type + '\n```' +
+      (info.doc ? '\n\n' + info.doc : '');
     return {
-      contents: {
-        kind: MarkupKind.Markdown,
-        value: contents
-      }
+      contents: { kind: MarkupKind.Markdown, value: contents },
     };
   }
 );
 
-
 documents.listen(connection);
-connection.listen(); 
+connection.listen();
