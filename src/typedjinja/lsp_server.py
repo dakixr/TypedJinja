@@ -51,7 +51,7 @@ def main():
             var, attr = m.group(1), m.group(2)
             if var not in annotations:
                 continue
-            # Determine the type string, strip any inline comments
+            # Determine the type string
             var_type = annotations[var].split("#", 1)[0].strip()
             # Prepare namespace and import required modules
             ns: dict[str, object] = {}
@@ -65,19 +65,28 @@ def main():
                 typ_obj = eval(var_type, ns)
             except Exception:
                 continue
-            # Check if attribute exists on the type
+            # If the attribute is missing, report a diagnostic
             if not hasattr(typ_obj, attr):
-                # Compute template line/col for the match
-                start = m.start(0)
-                line_idx = content[:start].count("\n")
-                col_idx = start - (content.rfind("\n", 0, start) + 1)
+                # Compute precise start and end offsets
+                start_offset = m.start(0)
+                end_offset = m.end(0)
+                # Include trailing parentheses if present
+                if end_offset < len(content) and content[end_offset] == "(":
+                    close = content.find(")", end_offset)
+                    if close != -1:
+                        end_offset = close + 1
+                # Compute line/column positions
+                start_line = content[:start_offset].count("\n")
+                start_col = start_offset - (content.rfind("\n", 0, start_offset) + 1)
+                end_line = content[:end_offset].count("\n")
+                end_col = end_offset - (content.rfind("\n", 0, end_offset) + 1)
                 diagnostics.append(
                     {
                         "message": f"Type '{var_type}' has no attribute '{attr}'",
-                        "line": line_idx,
-                        "col": col_idx,
-                        "end_line": line_idx,
-                        "end_col": col_idx + len(var) + 1 + len(attr),
+                        "line": start_line,
+                        "col": start_col,
+                        "end_line": end_line,
+                        "end_col": end_col,
                     }
                 )
         print(json.dumps(diagnostics))
