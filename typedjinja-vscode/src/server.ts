@@ -103,8 +103,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         resolveProvider: false
       },
       hoverProvider: true,
-      definitionProvider: true,
-      // diagnostics will be sent via connection.sendDiagnostics
+      definitionProvider: true
     }
   };
 });
@@ -154,7 +153,7 @@ function getJediCompletions(stubContent: string, expression: string, cursorLine:
 
   // Call the Python script as a module using -m
   const jediModule = 'typedjinja.jedi_complete';
-  const pythonExec = process.env.TYPEDJINJA_PYTHON_PATH || 'python3';
+  const pythonExec = process.env.PYTHON_PATH || 'python3';
   const result = spawnSync(pythonExec, ['-m', jediModule, String(lineCount), String(col)], { input: code, encoding: 'utf8' });
 
   if (result.error) {
@@ -237,7 +236,7 @@ connection.onCompletion(
         const lineCount = codeLines.length;
         const col = codeLines[lineCount - 1].length; // after the '('
         const jediModule = 'typedjinja.jedi_complete';
-        const pythonExec = process.env.TYPEDJINJA_PYTHON_PATH || 'python3';
+        const pythonExec = process.env.PYTHON_PATH || 'python3';
         const env = { ...process.env, TYPEDJINJA_SIGNATURE_HELP: '1' };
         const result = spawnSync(pythonExec, ['-m', jediModule, String(lineCount), String(col)], { input: code, encoding: 'utf8', env });
         if (result.error) {
