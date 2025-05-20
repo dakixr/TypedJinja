@@ -11,7 +11,8 @@ def parse_types_block(
     - annotations: dict of variable name to type string (optionally with docstring as a tuple)
     - malformed_lines: list of lines that could not be parsed
     """
-    pattern = re.compile(r"\{#\s*@types(.*?)#\}", re.DOTALL)
+    # Use regex to find the @types comment block (supports {# ... #}, {#- ... -#}, etc)
+    pattern = re.compile(r"\{#[-+]?\s*@types(.*?)#[-+]?\}", re.DOTALL)
     match = pattern.search(template_content)
     if not match:
         return [], {}, []
@@ -57,23 +58,22 @@ def parse_macro_blocks(template_content: str) -> list[dict[str, str | None]]:
     Extract all macro annotation blocks from the template.
     Returns a list of dicts: {name, params, docstring}
     """
-    macro_pattern = re.compile(r"\{#\s*@typedmacro(.*?)#\}", re.DOTALL)
+    # Use regex to find all @typedmacro comment blocks
+    macro_pattern = re.compile(r"\{#[-+]?\s*@typedmacro(.*?)#[-+]?\}", re.DOTALL)
     blocks = macro_pattern.findall(template_content)
     macros = []
     for block in blocks:
-        lines = [l.strip() for l in block.splitlines() if l.strip()]  # noqa: E741
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
         if not lines:
             continue
-        # First non-empty line: signature
         sig_line = lines[0]
         docstring = None
         if len(lines) > 1:
             docstring = " ".join(lines[1:])
-        # Parse signature: e.g. one_macro(name: str, x: int = 0)
-        m = re.match(r"([a-zA-Z_][a-zA-Z0-9_]*)\((.*)\)", sig_line)
-        if not m:
+        if "(" not in sig_line or not sig_line.endswith(")"):
             continue
-        name = m.group(1)
-        params = m.group(2)
+        name, rest = sig_line.split("(", 1)
+        name = name.strip()
+        params = rest[:-1]
         macros.append({"name": name, "params": params, "docstring": docstring})
     return macros
