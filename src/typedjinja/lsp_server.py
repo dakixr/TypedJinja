@@ -6,6 +6,8 @@ from pathlib import Path
 
 import jedi
 
+from typedjinja.parser import parse_types_block
+
 
 def parse_stub(stub: str) -> dict[str, dict[str, str | None]]:
     out = {}
@@ -19,11 +21,12 @@ def parse_stub(stub: str) -> dict[str, dict[str, str | None]]:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("mode", choices=["complete", "signature", "hover"])
+    p.add_argument("mode", choices=["complete", "signature", "hover", "diagnostics"])
     p.add_argument("stub")
-    p.add_argument("expr")
+    p.add_argument("expr", nargs="?")
     p.add_argument("line", type=int, nargs="?", default=0)
     p.add_argument("column", type=int, nargs="?", default=0)
+    p.add_argument("template", nargs="?")
     args = p.parse_args()
 
     stub_path = Path(args.stub)
@@ -32,6 +35,52 @@ def main():
     if args.mode == "hover":
         info = parse_stub(stub).get(args.expr, {})
         print(json.dumps(info))
+        return
+
+    if args.mode == "diagnostics":
+        # Diagnostics mode: scan template content for attribute accesses
+        template_path = args.template or args.stub
+        content = Path(template_path).read_text(encoding="utf-8")
+        imports, annotations, malformed = parse_types_block(content)
+        diagnostics = []
+        # Scan template for attribute accesses using regex
+        pattern = re.compile(
+            r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)"
+        )
+        for m in pattern.finditer(content):
+            var, attr = m.group(1), m.group(2)
+            if var not in annotations:
+                continue
+            # Determine the type string, strip any inline comments
+            var_type = annotations[var].split("#", 1)[0].strip()
+            # Prepare namespace and import required modules
+            ns: dict[str, object] = {}
+            for imp in imports:
+                try:
+                    exec(imp, ns)
+                except Exception:
+                    pass
+            # Evaluate the type object
+            try:
+                typ_obj = eval(var_type, ns)
+            except Exception:
+                continue
+            # Check if attribute exists on the type
+            if not hasattr(typ_obj, attr):
+                # Compute template line/col for the match
+                start = m.start(0)
+                line_idx = content[:start].count("\n")
+                col_idx = start - (content.rfind("\n", 0, start) + 1)
+                diagnostics.append(
+                    {
+                        "message": f"Type '{var_type}' has no attribute '{attr}'",
+                        "line": line_idx,
+                        "col": col_idx,
+                        "end_line": line_idx,
+                        "end_col": col_idx + len(var) + 1 + len(attr),
+                    }
+                )
+        print(json.dumps(diagnostics))
         return
 
     imports = [l for l in stub.splitlines() if l.startswith(("import ", "from "))]

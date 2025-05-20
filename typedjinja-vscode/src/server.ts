@@ -253,5 +253,66 @@ connection.onHover(
   }
 );
 
+// Helper to run diagnostics and send results
+async function runDiagnostics(doc: TextDocument) {
+  if (!doc) return;
+  logToClient(`[Diagnostics] Triggered for: ${doc.uri}`);
+  const templatePath = url.fileURLToPath(doc.uri);
+  logToClient(`[Diagnostics] Template path: ${templatePath}`);
+  const stubPath = (() => {
+    const path = require('path'),
+      dir = path.dirname(templatePath),
+      base = path.basename(templatePath, '.jinja');
+    return path.join(dir, '__pycache__', base + '.pyi');
+  })();
+  logToClient(`[Diagnostics] Stub path: ${stubPath}`);
+  if (!fs.existsSync(stubPath)) {
+    logToClient(`[Diagnostics] No stub found, clearing diagnostics.`);
+    connection.sendDiagnostics({ uri: doc.uri, diagnostics: [] });
+    return;
+  }
+  const pythonExec = process.env.PYTHON_PATH || 'python3';
+  logToClient(`[Diagnostics] Running: ${pythonExec} -m typedjinja.lsp_server diagnostics ...`);
+  const result = spawnSync(
+    pythonExec,
+    ['-m', 'typedjinja.lsp_server', 'diagnostics', stubPath, '', '0', '0', templatePath],
+    { encoding: 'utf8' }
+  );
+  if (result.error) {
+    logToClient(`[Diagnostics ERROR] ${result.error}`);
+    return;
+  }
+  logToClient(`[Diagnostics] Raw stdout: ${result.stdout}`);
+  logToClient(`[Diagnostics] Raw stderr: ${result.stderr}`);
+  let diagnostics = [];
+  try {
+    diagnostics = JSON.parse(result.stdout);
+  } catch (e) {
+    logToClient(`[Diagnostics Parse Error] ${result.stdout}`);
+    diagnostics = [];
+  }
+  logToClient(`[Diagnostics] Final diagnostics: ${JSON.stringify(diagnostics)}`);
+  connection.sendDiagnostics({
+    uri: doc.uri,
+    diagnostics: diagnostics.map((d: any) => ({
+      message: d.message,
+      range: {
+        start: { line: d.line, character: d.col },
+        end: { line: d.end_line, character: d.end_col },
+      },
+      severity: 1, // Error
+      source: 'typedjinja',
+    })),
+  });
+}
+
+documents.onDidChangeContent(async (change: { document: TextDocument }) => {
+  await runDiagnostics(change.document);
+});
+
+documents.onDidOpen(async (change: { document: TextDocument }) => {
+  await runDiagnostics(change.document);
+});
+
 documents.listen(connection);
 connection.listen();
