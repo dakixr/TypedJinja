@@ -243,7 +243,7 @@ function findMacroDefinitionByName(doc: TextDocument, macroName: string): { node
 function getDefinitionContext(
   doc: TextDocument,
   position: { line: number; character: number }
-): { type: 'macro_call'; name: string; sourceTemplate?: string } | null {
+): { type: 'macro_call'; name: string; sourceTemplate?: string } | { type: 'include'; target: string } | null {
   const tree = tsParser.parse(doc.getText());
   const point = { row: position.line, column: position.character };
   let node = tree.rootNode.namedDescendantForPosition(point);
@@ -251,6 +251,15 @@ function getDefinitionContext(
   if (!node) return null;
 
   logToClient(`[Definition] Node at cursor: ${node.type} '${node.text}'`);
+
+  // Include statement jump-to-definition
+  if (node.type === 'string_literal' && node.parent?.type === 'include_statement') {
+    // literal text includes quotes
+    const lit = node.text;
+    const target = lit.startsWith('"') || lit.startsWith("'") ? lit.slice(1, -1) : lit;
+    logToClient(`[Definition] Found include target: ${target}`);
+    return { type: 'include', target };
+  }
 
   // Check if cursor is on a function_call (potential macro call)
   if (node.type === 'identifier' && node.parent?.type === 'function_call') {
@@ -284,6 +293,27 @@ connection.onDefinition(
 
     logToClient(`[Definition] Request for ${params.textDocument.uri} at L${params.position.line}C${params.position.character}`);
     const context = getDefinitionContext(doc, params.position);
+
+    // Handle include definitions
+    if (context?.type === 'include') {
+      const rel = context.target;
+      if (!TEMPLATES_ROOT) {
+        logToClient('[Definition] TEMPLATES_ROOT not set. Cannot resolve include.');
+        return null;
+      }
+      const path = require('path');
+      const abs = path.resolve(TEMPLATES_ROOT, rel);
+      logToClient(`[Definition] Resolving include path: ${abs}`);
+      try {
+        fs.accessSync(abs);
+      } catch (e) {
+        logToClient(`[Definition] Include target not found: ${abs}`);
+        return null;
+      }
+      const uri2 = url.pathToFileURL(abs).toString();
+      // Jump to start of file
+      return [{ uri: uri2, range: Range.create(0, 0, 0, 0) }];
+    }
 
     if (context?.type === 'macro_call') {
       const macroName = context.name;
