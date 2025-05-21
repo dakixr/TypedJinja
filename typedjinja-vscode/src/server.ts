@@ -261,6 +261,22 @@ function getDefinitionContext(
     return { type: 'include', target };
   }
 
+  // Handle imported macro identifiers in the import statement
+  if (node.type === 'identifier') {
+    const textAll = doc.getText();
+    const importRegex2 = /\{\%\s*from\s*["']([^"']+)["']\s*import\s*([A-Za-z0-9_,\s]+)\s*\%\}/g;
+    let m2;
+    while ((m2 = importRegex2.exec(textAll)) !== null) {
+      const sourceTemplate = m2[1];
+      const names = m2[2];
+      const importedNames = names.split(',').map(n => n.trim());
+      if (importedNames.includes(node.text)) {
+        logToClient(`[Definition] Imported macro in import statement: ${node.text} from ${sourceTemplate}`);
+        return { type: 'macro_call', name: node.text, sourceTemplate };
+      }
+    }
+  }
+
   // Check if cursor is on a function_call (potential macro call)
   if (node.type === 'identifier' && node.parent?.type === 'function_call') {
     const macroName = node.text;
