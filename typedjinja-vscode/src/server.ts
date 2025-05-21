@@ -24,6 +24,10 @@ import Jinja2 from 'tree-sitter-jinja';
 // Create a connection for the server
 const connection = createConnection(ProposedFeatures.all);
 
+// Read the configured template root from environment
+const TEMPLATES_ROOT = process.env.TYPEDJINJA_TEMPLATES_ROOT || '';
+logToClient(`[TypedJinja LSP] Templates root directory: ${TEMPLATES_ROOT}`);
+
 // Create a simple text document manager
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 

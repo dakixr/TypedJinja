@@ -2,6 +2,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
 import { exec } from 'child_process';
+import * as fs from 'fs';
+import * as process from 'process';
 
 let client: LanguageClient;
 export const outputChannel = vscode.window.createOutputChannel('TypedJinja');
@@ -29,6 +31,21 @@ async function getPythonInterpreterPath(): Promise<string | null> {
 
 export async function activate(context: vscode.ExtensionContext) {
   outputChannel.appendLine('Activating TypedJinja extension...');
+  // Read TypedJinja config for template root
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath || '';
+  const configPath = path.join(workspaceRoot, '.typedjinja');
+  let templateRoot = '';
+  if (fs.existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      templateRoot = path.isAbsolute(cfg.templateRoot)
+        ? cfg.templateRoot
+        : path.join(workspaceRoot, cfg.templateRoot);
+      outputChannel.appendLine(`[TypedJinja] Using template root: ${templateRoot}`);
+    } catch (e) {
+      outputChannel.appendLine(`[TypedJinja] Failed to parse .typedjinja: ${e}`);
+    }
+  }
   // Path to the server module (now inside the extension)
   const serverModule = context.asAbsolutePath(
     path.join('lib', 'server.js')
@@ -39,8 +56,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Server options
   const serverOptions: ServerOptions = {
-    run: { module: serverModule, transport: TransportKind.stdio, options: { env: { ...process.env, PYTHON_PATH: pythonPath } } },
-    debug: { module: serverModule, transport: TransportKind.stdio, options: { env: { ...process.env, PYTHON_PATH: pythonPath } } }
+    run: { module: serverModule, transport: TransportKind.stdio, options: { env: { ...process.env, PYTHON_PATH: pythonPath, TYPEDJINJA_TEMPLATES_ROOT: templateRoot } } },
+    debug: { module: serverModule, transport: TransportKind.stdio, options: { env: { ...process.env, PYTHON_PATH: pythonPath, TYPEDJINJA_TEMPLATES_ROOT: templateRoot } } }
   };
 
   // Client options
