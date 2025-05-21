@@ -75,6 +75,15 @@ TypedJinja brings type safety and editor intelligence to Jinja2 templates by all
   - Get completions, hover, and type checking for template variables in supported editors (VS Code, PyCharm, etc.).
 - **Extensible & Fast:**
   - Designed for easy extension and fast feedback in the editor.
+- **VSCode Extension & LSP Features:**
+  - **Completions:** Context-aware completions for variables, attributes, and macro arguments powered by Python stub generation.
+  - **Hover Information:** Hover over variables, macros, or includes to see full type signatures and documentation.
+  - **Go to Definition:**
+    - Jump to variable definitions in your Python types or stubs.
+    - Jump to macro definitions (same-file or imported) using Tree-sitter parsing.
+    - Jump to included templates via `{% include %}`.
+  - **Diagnostics:** Real-time error squiggles for invalid attribute access or calls based on Python reflection.
+  - **@types Block Navigation:** Hover and go-to-definition inside the `@types` block, resolving to real Python definitions via Jedi.
 
 ## Example
 
@@ -100,7 +109,55 @@ TypedJinja brings type safety and editor intelligence to Jinja2 templates by all
 2. **Stub Generation**
 3. **LSP Plugin for Editor Support**
 4. **Documentation & Examples**
+5. **Advanced LSP: Find References, Rename, Symbols**
 
 ## Contributing
 
 Contributions are welcome! Please see `CURSOR_RULES.md` for development guidelines and open an issue or pull request to get started. 
+
+## Packaging & Publishing
+
+- **Build extension:**
+  ```sh
+  pnpm run compile
+  ```
+- **Package VSIX:**
+  ```sh
+  npx vsce package --no-dependencies
+  ```
+- **Publish to Marketplace:** Update `package.json` with proper `publisher`, `repository`, and `license`, then:
+  ```sh
+  vsce publish
+  ```
+
+## Usage
+
+1. **Annotate Template Context:**
+   ```jinja
+   {# @types
+   from datetime import datetime
+
+   created_at: datetime
+   data: dict[str, str]
+   #}
+   {% from "another_template.jinja" import one_macro %}
+   ```
+
+2. **Stub Generation (offline or on save):**
+   ```sh
+   python -m typedjinja path/to/template.jinja
+   ```
+
+3. **Install VSCode Extension:**
+   - Download the `.vsix` package from the releases or build locally:
+     ```sh
+     cd typedjinja-vscode
+     pnpm install
+     pnpm run compile
+     npx vsce package --no-dependencies
+     ```
+   - In VSCode: `Extensions: Install from VSIX...`, select the generated `typedjinja-vscode-0.0.1.vsix`.
+
+4. **Editor Experience:**
+   - Open your `.jinja` file.
+   - Completions, hover, go-to-definition, and diagnostics will work out of the box for variables, macros, includes, and types. 
