@@ -372,7 +372,23 @@ connection.onHover(
     }
     if (macroDef) {
       const node = macroDef.node;
-      // Try to extract signature and docstring (if any)
+      // First, try to extract @typedmacro documentation
+      const fullText = macroDoc.getText();
+      const tmRegex = /\{\#\s*@typedmacro([\s\S]*?)\#\}/g;
+      let tmMatch;
+      while ((tmMatch = tmRegex.exec(fullText))) {
+        const block = tmMatch[1];
+        if (block.includes(`${word}(`)) {
+          const lines = block.trim().split(/\r?\n/).map(l => l.trim());
+          const signatureLine = lines[0];  // e.g. one_macro(name: str)
+          const docLines = lines.slice(1).map(l => l.trim());
+          const signature = '```jinja2\n' + `{% macro ${signatureLine} %}` + '\n```';
+          const docs = docLines.join('\n');
+          const value = signature + (docs ? '\n\n' + docs : '');
+          return { contents: { kind: MarkupKind.Markdown, value } };
+        }
+      }
+      // Fallback: extract signature and docstring from AST
       let signature = `{% macro ${word}`;
       // Get arguments if present
       const argsNode = node.namedChildren.find((c: any) => c.type === 'parameters');
@@ -384,9 +400,7 @@ connection.onHover(
       const docNode = node.namedChildren.find((c: any) => c.type === 'string_literal');
       let docstring = docNode ? docNode.text : '';
       const contents = '```jinja2\n' + signature + '\n```' + (docstring ? '\n\n' + docstring : '');
-      return {
-        contents: { kind: MarkupKind.Markdown, value: contents },
-      };
+      return { contents: { kind: MarkupKind.Markdown, value: contents } };
     }
     // Fallback: old hover logic
     const templatePath = url.fileURLToPath(doc.uri);
