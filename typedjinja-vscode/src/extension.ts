@@ -47,7 +47,10 @@ export async function activate(context: vscode.ExtensionContext) {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: 'file', language: 'jinja' }],
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/*.jinja')
+      fileEvents: [
+        vscode.workspace.createFileSystemWatcher('**/*.jinja'),
+        vscode.workspace.createFileSystemWatcher('**/__pycache__/*.pyi'),
+      ]
     },
     outputChannel
   };

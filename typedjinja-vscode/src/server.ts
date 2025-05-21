@@ -10,6 +10,7 @@ import {
   TextDocumentSyncKind,
   Hover,
   MarkupKind,
+  FileChangeType,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -312,6 +313,26 @@ documents.onDidChangeContent(async (change: { document: TextDocument }) => {
 
 documents.onDidOpen(async (change: { document: TextDocument }) => {
   await runDiagnostics(change.document);
+});
+
+// After runDiagnostics, before documents.listen(connection):
+connection.onDidChangeWatchedFiles((params) => {
+  logToClient(`[LSP] Watched files changed: ${JSON.stringify(params.changes)}`);
+  for (const change of params.changes) {
+    // If a stub file was created or changed, re-run diagnostics on the corresponding template
+    if ((change.type === FileChangeType.Created || change.type === FileChangeType.Changed) && change.uri.endsWith('.pyi')) {
+      const stubFs = url.fileURLToPath(change.uri);
+      const path = require('path');
+      const cacheDir = path.dirname(stubFs);
+      const templateFs = path.join(path.dirname(cacheDir), path.basename(stubFs, '.pyi') + '.jinja');
+      const templateUri = url.pathToFileURL(templateFs).toString();
+      const doc = documents.get(templateUri);
+      if (doc) {
+        logToClient(`[Diagnostics] Re-running diagnostics for: ${templateUri}`);
+        runDiagnostics(doc);
+      }
+    }
+  }
 });
 
 documents.listen(connection);
