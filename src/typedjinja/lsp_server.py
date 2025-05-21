@@ -29,6 +29,7 @@ def main():
             "hover",
             "diagnostics",
             "find_macro_definition",
+            "definition",
         ],
     )
     p.add_argument("path_or_stub")
@@ -65,6 +66,49 @@ def main():
         except Exception as e:
             pass
         print(json.dumps(definition_location))
+        return
+
+    if args.mode == "definition":
+        # Use Jedi to find definitions of a name in the stub context
+        stub_path = Path(args.path_or_stub)
+        stub = stub_path.read_text(encoding="utf-8")
+        name = args.expr_or_macro_name
+        # Build code for Jedi: imports + stub vars + assignment
+        imports_from_stub = [
+            l for l in stub.splitlines() if l.startswith(("import ", "from "))
+        ]
+        vars_from_stub = [
+            l.split("#")[0].strip()
+            for l in stub.splitlines()
+            if ":" in l and not l.startswith(("import", "from"))
+        ]
+        code_for_jedi = "\n".join(
+            imports_from_stub + vars_from_stub + [f"__typedjinja_target__ = {name}"]
+        )
+        code_lines = code_for_jedi.split("\n")
+        line_num = len(code_lines)
+        col_num = len(code_lines[-1])
+        script = jedi.Script(code_for_jedi, path=str(stub_path))
+        definitions = []
+        try:
+            defs = script.goto(line_num, col_num)
+            for d in defs:
+                if d.module_path:
+                    start_line = d.line - 1 if d.line else 0
+                    start_col = d.column
+                    end_col = start_col + len(d.name or "")
+                    definitions.append(
+                        {
+                            "file_path": str(d.module_path),
+                            "line": start_line,
+                            "col": start_col,
+                            "end_line": start_line,
+                            "end_col": end_col,
+                        }
+                    )
+        except Exception:
+            pass
+        print(json.dumps(definitions))
         return
 
     stub_path = Path(args.path_or_stub)

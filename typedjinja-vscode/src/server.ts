@@ -308,6 +308,52 @@ connection.onDefinition(
     if (!doc) return null;
 
     logToClient(`[Definition] Request for ${params.textDocument.uri} at L${params.position.line}C${params.position.character}`);
+    // Definition support for @types block via Python CLI
+    const fullDoc = doc.getText();
+    const docLines = fullDoc.split(/\r?\n/);
+    const startTypes = docLines.findIndex(l => l.match(/\{\#\s*@types/));
+    const endTypes = startTypes >= 0 ? docLines.findIndex((l,i) => i > startTypes && l.match(/#\}/)) : -1;
+    if (startTypes >= 0 && endTypes >= startTypes && params.position.line >= startTypes && params.position.line <= endTypes) {
+      const lineText = docLines[params.position.line];
+      const idMatch = /[A-Za-z_][A-Za-z0-9_]*/g;
+      let m;
+      while ((m = idMatch.exec(lineText))) {
+        const [word] = m;
+        const col = m.index;
+        if (params.position.character >= col && params.position.character <= col + word.length) {
+          const templatePath = url.fileURLToPath(doc.uri);
+          const stubPath = (() => {
+            const p = require('path');
+            const dir = p.dirname(templatePath);
+            const base = p.basename(templatePath, '.jinja');
+            return p.join(dir, '__pycache__', base + '.pyi');
+          })();
+          if (!fs.existsSync(stubPath)) break;
+          const pythonExec = process.env.PYTHON_PATH || 'python3';
+          const result = spawnSync(
+            pythonExec,
+            ['-m', 'typedjinja.lsp_server', 'definition', stubPath, word],
+            { encoding: 'utf8' }
+          );
+          if (result.error) {
+            logToClient(`[Definition ERROR] ${result.error}`);
+            break;
+          }
+          let defs: any[] = [];
+          try {
+            defs = JSON.parse(result.stdout);
+          } catch (e) {
+            logToClient(`[Definition ERROR] Invalid JSON: ${result.stdout}`);
+            break;
+          }
+          const locs = defs.map(d => ({
+            uri: url.pathToFileURL(d.file_path).toString(),
+            range: Range.create(d.line, d.col, d.end_line, d.end_col),
+          }));
+          return locs.length ? locs : null;
+        }
+      }
+    }
     const context = getDefinitionContext(doc, params.position);
 
     // Handle include definitions
