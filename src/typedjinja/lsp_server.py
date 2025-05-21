@@ -89,25 +89,32 @@ def main():
         line_num = len(code_lines)
         col_num = len(code_lines[-1])
         script = jedi.Script(code_for_jedi, path=str(stub_path))
-        definitions = []
+        definitions: list[dict[str, int | str]] = []
+        stub_resolved = stub_path.resolve()
         try:
             defs = script.goto(line_num, col_num)
             for d in defs:
-                if d.module_path:
-                    start_line = d.line - 1 if d.line else 0
-                    start_col = d.column
-                    end_col = start_col + len(d.name or "")
-                    definitions.append(
-                        {
-                            "file_path": str(d.module_path),
-                            "line": start_line,
-                            "col": start_col,
-                            "end_line": start_line,
-                            "end_col": end_col,
-                        }
-                    )
+                if not d.module_path:
+                    continue
+                module_path = Path(d.module_path).resolve()
+                # Skip definitions in the stub file itself
+                if module_path == stub_resolved:
+                    continue
+                start_line = d.line - 1 if d.line else 0
+                start_col = d.column
+                end_col = start_col + len(d.name or "")
+                definitions.append(
+                    {
+                        "file_path": str(d.module_path),
+                        "line": start_line,
+                        "col": start_col,
+                        "end_line": start_line,
+                        "end_col": end_col,
+                    }
+                )
         except Exception:
             pass
+        # Return only Jedi-based definitions (no stub fallbacks)
         print(json.dumps(definitions))
         return
 
