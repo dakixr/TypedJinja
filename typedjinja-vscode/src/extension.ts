@@ -29,21 +29,27 @@ async function getPythonInterpreterPath(): Promise<string | null> {
   return pythonPath;
 }
 
+
 export async function activate(context: vscode.ExtensionContext) {
   outputChannel.appendLine('Activating TypedJinja extension...');
-  // Read TypedJinja config for template root
-  const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath || '';
-  const configPath = path.join(workspaceRoot, '.typedjinja');
+  const workspaceFolders = vscode.workspace.workspaceFolders;
   let templateRoot = '';
-  if (fs.existsSync(configPath)) {
-    try {
-      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      templateRoot = path.isAbsolute(cfg.templateRoot)
-        ? cfg.templateRoot
-        : path.join(workspaceRoot, cfg.templateRoot);
-      outputChannel.appendLine(`[TypedJinja] Using template root: ${templateRoot}`);
-    } catch (e) {
-      outputChannel.appendLine(`[TypedJinja] Failed to parse .typedjinja: ${e}`);
+  if (workspaceFolders && workspaceFolders.length > 0) {
+    const workspaceRoot = workspaceFolders[0].uri.fsPath;
+    // Search for .typedjinja config anywhere in the workspace
+    const configFiles = await vscode.workspace.findFiles('**/.typedjinja', '**/node_modules/**', 1);
+    if (configFiles.length > 0) {
+      const configPath = configFiles[0].fsPath;
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const rel = config.templateRoot;
+      // First try resolving relative to workspace root
+      const byWorkspace = path.isAbsolute(rel) ? rel : path.join(workspaceRoot, rel);
+      if (fs.existsSync(byWorkspace)) {
+        templateRoot = byWorkspace;
+      } else {
+        // Fallback to directory containing the config file
+        templateRoot = path.dirname(configPath);
+      }
     }
   }
   // Path to the server module (now inside the extension)
@@ -56,8 +62,28 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Server options
   const serverOptions: ServerOptions = {
-    run: { module: serverModule, transport: TransportKind.stdio, options: { env: { ...process.env, PYTHON_PATH: pythonPath, TYPEDJINJA_TEMPLATES_ROOT: templateRoot } } },
-    debug: { module: serverModule, transport: TransportKind.stdio, options: { env: { ...process.env, PYTHON_PATH: pythonPath, TYPEDJINJA_TEMPLATES_ROOT: templateRoot } } }
+    run: {
+      command: 'node',
+      args: [serverModule, '--stdio'],
+      options: {
+        env: {
+          ...process.env,
+          TYPEDJINJA_TEMPLATES_ROOT: templateRoot,
+          PYTHON_PATH: pythonPath,
+        }
+      }
+    },
+    debug: {
+      command: 'node',
+      args: [serverModule, '--stdio'],
+      options: {
+        env: {
+          ...process.env,
+          TYPEDJINJA_TEMPLATES_ROOT: templateRoot,
+          PYTHON_PATH: pythonPath,
+        }
+      }
+    }
   };
 
   // Client options

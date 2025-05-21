@@ -11,6 +11,8 @@ import {
   Hover,
   MarkupKind,
   FileChangeType,
+  Definition,
+  Range,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -24,19 +26,20 @@ import Jinja2 from 'tree-sitter-jinja';
 // Create a connection for the server
 const connection = createConnection(ProposedFeatures.all);
 
-// Read the configured template root from environment
-const TEMPLATES_ROOT = process.env.TYPEDJINJA_TEMPLATES_ROOT || '';
-logToClient(`[TypedJinja LSP] Templates root directory: ${TEMPLATES_ROOT}`);
-
-// Create a simple text document manager
-const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
-
+// Moved LOG_CHANNEL and logToClient function definition higher
 const LOG_CHANNEL = 'typedjinja/log';
 function logToClient(msg: string) {
   connection.sendNotification(LOG_CHANNEL, msg);
   connection.console.log(msg);
   console.log('[TypedJinja LSP]', msg);
 }
+
+// Read the configured template root from environment
+const TEMPLATES_ROOT = process.env.TYPEDJINJA_TEMPLATES_ROOT || '';
+logToClient(`[TypedJinja LSP] Templates root directory: ${TEMPLATES_ROOT}`);
+
+// Create a simple text document manager
+const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
 // Init Tree-sitter for Jinja2
 const tsParser = new Parser();
@@ -202,7 +205,135 @@ connection.onCompletion(
   }
 );
 
-// Hover via Python CLI
+// Utility: Find all macro definitions in a document using Tree-sitter
+function findMacroDefinitions(doc: TextDocument): Array<{ name: string; node: any }> {
+  const tree = tsParser.parse(doc.getText());
+  const macros: Array<{ name: string; node: any }> = [];
+  function walk(node: any) {
+    if (node.type === 'macro_statement') {
+      // Recursively find the identifier child representing the macro name
+      function findId(n: any): any {
+        if (n.type === 'identifier') return n;
+        for (const c of n.namedChildren || []) {
+          const found = findId(c);
+          if (found) return found;
+        }
+        return null;
+      }
+      const idNode = findId(node);
+      if (idNode) {
+        macros.push({ name: idNode.text, node });
+      }
+    }
+    for (const child of node.namedChildren || []) {
+      walk(child);
+    }
+  }
+  walk(tree.rootNode);
+  return macros;
+}
+
+// Utility: Find macro definition by name in a document
+function findMacroDefinitionByName(doc: TextDocument, macroName: string): { node: any } | null {
+  const defs = findMacroDefinitions(doc);
+  return defs.find(def => def.name === macroName) || null;
+}
+
+// Helper to find import statements and called macros
+function getDefinitionContext(
+  doc: TextDocument,
+  position: { line: number; character: number }
+): { type: 'macro_call'; name: string; sourceTemplate?: string } | null {
+  const tree = tsParser.parse(doc.getText());
+  const point = { row: position.line, column: position.character };
+  let node = tree.rootNode.namedDescendantForPosition(point);
+
+  if (!node) return null;
+
+  logToClient(`[Definition] Node at cursor: ${node.type} '${node.text}'`);
+
+  // Check if cursor is on a function_call (potential macro call)
+  if (node.type === 'identifier' && node.parent?.type === 'function_call') {
+    const macroName = node.text;
+    // Look for import statement
+    const importRegex = /\{\%\s*from\s*["']([^"']+)["']\s*import\s*([A-Za-z0-9_,\s]+)\%\}/g;
+    let match;
+    const text = doc.getText();
+    while ((match = importRegex.exec(text)) !== null) {
+      const sourceTemplate = match[1];
+      const importedNames = match[2].split(',').map(name => name.trim());
+      if (importedNames.includes(macroName)) {
+        logToClient(`[Definition] Found imported macro call: ${macroName} from ${sourceTemplate}`);
+        return { type: 'macro_call', name: macroName, sourceTemplate };
+      }
+    }
+    // If not found in imports, check for same-file macro definition
+    const macroDef = findMacroDefinitionByName(doc, macroName);
+    if (macroDef) {
+      logToClient(`[Definition] Found same-file macro definition: ${macroName}`);
+      return { type: 'macro_call', name: macroName };
+    }
+  }
+  return null;
+}
+
+connection.onDefinition(
+  async (params: TextDocumentPositionParams): Promise<Definition | null> => {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return null;
+
+    logToClient(`[Definition] Request for ${params.textDocument.uri} at L${params.position.line}C${params.position.character}`);
+    const context = getDefinitionContext(doc, params.position);
+
+    if (context?.type === 'macro_call') {
+      const macroName = context.name;
+      // Imported macro: resolve in imported file
+      if (context.sourceTemplate) {
+        if (!TEMPLATES_ROOT) {
+          logToClient('[Definition] TEMPLATES_ROOT not set. Cannot resolve imported macro.');
+          return null;
+        }
+        const path = require('path');
+        const absoluteSourcePath = path.resolve(TEMPLATES_ROOT, context.sourceTemplate);
+        logToClient(`[Definition] Looking for macro '${macroName}' in '${absoluteSourcePath}'`);
+        let fileText: string;
+        try {
+          fileText = fs.readFileSync(absoluteSourcePath, 'utf8');
+        } catch (e) {
+          logToClient(`[Definition ERROR] Failed to read source template: ${e}`);
+          return null;
+        }
+        const tempDoc = TextDocument.create('file://' + absoluteSourcePath, 'jinja', 1, fileText);
+        const macroDef = findMacroDefinitionByName(tempDoc, macroName);
+        if (macroDef) {
+          const node = macroDef.node;
+          const start = node.startPosition;
+          const end = node.endPosition;
+          return [{
+            uri: 'file://' + absoluteSourcePath,
+            range: Range.create(start.row, start.column, end.row, end.column)
+          }];
+        }
+        return null;
+      } else {
+        // Same-file macro
+        const macroDef = findMacroDefinitionByName(doc, macroName);
+        if (macroDef) {
+          const node = macroDef.node;
+          const start = node.startPosition;
+          const end = node.endPosition;
+          return [{
+            uri: doc.uri,
+            range: Range.create(start.row, start.column, end.row, end.column)
+          }];
+        }
+      }
+    }
+    return null;
+  }
+);
+
+// Enhanced hover for macros (same-file and imported)
 connection.onHover(
   async (_params, _token): Promise<Hover | null> => {
     logToClient('Hover request received');
@@ -211,6 +342,53 @@ connection.onHover(
       logToClient('No document found for hover request');
       return null;
     }
+    const word = getWordAt(doc, _params.position);
+    if (!word) {
+      return null;
+    }
+    // Check if this is a macro (same-file)
+    let macroDef = findMacroDefinitionByName(doc, word);
+    let macroDoc = doc;
+    // If not found, check if imported
+    if (!macroDef) {
+      // Look for import statement
+      const importRegex = /\{\%\s*from\s*["']([^"']+)["']\s*import\s*([A-Za-z0-9_,\s]+)\%\}/g;
+      let match;
+      const text = doc.getText();
+      while ((match = importRegex.exec(text)) !== null) {
+        const sourceTemplate = match[1];
+        const importedNames = match[2].split(',').map(name => name.trim());
+        if (importedNames.includes(word)) {
+          if (!TEMPLATES_ROOT) return null;
+          const path = require('path');
+          const absoluteSourcePath = path.resolve(TEMPLATES_ROOT, sourceTemplate);
+          if (!fs.existsSync(absoluteSourcePath)) return null;
+          const fileText = fs.readFileSync(absoluteSourcePath, 'utf8');
+          macroDoc = TextDocument.create('file://' + absoluteSourcePath, 'jinja', 1, fileText);
+          macroDef = findMacroDefinitionByName(macroDoc, word);
+          break;
+        }
+      }
+    }
+    if (macroDef) {
+      const node = macroDef.node;
+      // Try to extract signature and docstring (if any)
+      let signature = `{% macro ${word}`;
+      // Get arguments if present
+      const argsNode = node.namedChildren.find((c: any) => c.type === 'parameters');
+      if (argsNode) {
+        signature += argsNode.text;
+      }
+      signature += ' %}';
+      // Try to get docstring: first string_literal child
+      const docNode = node.namedChildren.find((c: any) => c.type === 'string_literal');
+      let docstring = docNode ? docNode.text : '';
+      const contents = '```jinja2\n' + signature + '\n```' + (docstring ? '\n\n' + docstring : '');
+      return {
+        contents: { kind: MarkupKind.Markdown, value: contents },
+      };
+    }
+    // Fallback: old hover logic
     const templatePath = url.fileURLToPath(doc.uri);
     const stubPath = (() => {
       const path = require('path'),
@@ -220,11 +398,6 @@ connection.onHover(
     })();
     logToClient(`Hover stub at: ${stubPath}`);
     if (!fs.existsSync(stubPath)) {
-      return null;
-    }
-
-    const word = getWordAt(doc, _params.position);
-    if (!word) {
       return null;
     }
     logToClient(`Hover word: ${word}`);
@@ -238,7 +411,6 @@ connection.onHover(
       logToClient(`[ERROR] ${result.error ?? result.stderr}`);
       return null;
     }
-
     let info: { type?: string; doc?: string } = {};
     try {
       info = JSON.parse(result.stdout);
@@ -248,7 +420,6 @@ connection.onHover(
     if (!info.type) {
       return null;
     }
-
     const contents =
       '```python\n' + word + ': ' + info.type + '\n```' +
       (info.doc ? '\n\n' + info.doc : '');
