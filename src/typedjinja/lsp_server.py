@@ -6,7 +6,7 @@ from pathlib import Path
 
 import jedi
 
-from typedjinja.parser import parse_types_block
+from typedjinja.parser import parse_macro_blocks, parse_types_block
 
 
 def parse_stub(stub: str) -> dict[str, dict[str, str | None]]:
@@ -34,6 +34,27 @@ def main():
 
     if args.mode == "hover":
         info = parse_stub(stub).get(args.expr, {})
+        # Fallback for typed macros
+        if not info or not info.get("type"):
+            # Derive template path from stub path
+            stub_path = Path(args.stub)
+            template_path = (
+                Path(args.template)
+                if args.template
+                else stub_path.parent.parent / f"{stub_path.stem}.jinja"
+            )
+            try:
+                template_content = template_path.read_text(encoding="utf-8")
+            except Exception:
+                template_content = ""
+            # Parse typedmacro blocks
+            macros = parse_macro_blocks(template_content)
+            for macro in macros:
+                if macro.get("name") == args.expr:
+                    params = macro.get("params") or ""
+                    doc = macro.get("docstring") or ""
+                    info = {"type": f"{args.expr}({params})", "doc": doc}
+                    break
         print(json.dumps(info))
         return
 
