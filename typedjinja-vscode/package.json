@@ -3,9 +3,9 @@
   "displayName": "TypedJinja",
   "description": "LSP support for type-safe Jinja2 templates using TypedJinja.",
   "version": "0.0.1",
-  "publisher": "your-publisher-name",
+  "publisher": "dakixr",
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.100.0"
   },
   "categories": [
     "Programming Languages"
@@ -26,6 +26,9 @@
       }
     ]
   },
+  "activationEvents": [
+    "onLanguage:jinja"
+  ],
   "scripts": {
     "vscode:prepublish": "tsc -p ./",
     "compile": "tsc -p ./",
