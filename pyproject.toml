@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "typedjinja"
-version = "0.1.1"
+version = "0.1.2"
 description = "Type safety and editor intelligence for Jinja2 templates."
 authors = [
     { name = "Daniel Rodriguez Mariblanca", email = "dakixr@gmail.com" }
@@ -13,7 +13,10 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"
 dependencies = [
-    "jinja2>=3.1.0"
+    "jinja2>=3.1.0",
+    "jedi>=0.19.2",
+    "tree-sitter>=0.24.0",
+    "tree-sitter-jinja>=0.3.3"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

@@ -36,10 +36,27 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.19",
-    "@types/vscode": "^1.100.0",
+    "@types/vscode": "^1.80.0",
     "typescript": "^5.8.3"
   },
   "dependencies": {
+    "@vscode/vsce": "^3.4.2",
     "vscode-languageclient": "^9.0.1"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dakixr/TypedJinja"
+  },
+  "icon": "icon.png",
+  "changelog": "CHANGELOG.md",
+  "support": "SUPPORT.md",
+  "pricing": "Free",
+  "galleryBanner": {
+    "color": "#f5c542",
+    "theme": "light"
+  },
+  "sponsor": {
+    "url": "https://github.com/sponsors/dakixr"
   }
 }
