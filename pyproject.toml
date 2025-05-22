@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: Markup :: HTML"
 ]
-urls = { Homepage = "https://github.com/dakixr/TypedJinja" }
+urls = { "Homepage" = "https://github.com/dakixr/TypedJinja", "Repository" = "https://github.com/dakixr/TypedJinja.git" }
 
 [project.optional-dependencies]
 dev = [
