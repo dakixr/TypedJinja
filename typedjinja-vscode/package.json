@@ -2,10 +2,10 @@
   "name": "typedjinja-vscode",
   "displayName": "TypedJinja",
   "description": "LSP support for type-safe Jinja2 templates using TypedJinja.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "dakixr",
   "engines": {
-    "vscode": "^1.100.0"
+    "vscode": "^1.80.0"
   },
   "categories": [
     "Programming Languages"
@@ -40,8 +40,6 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "tree-sitter": "^0.22.4",
-    "tree-sitter-jinja": "link:../tree-sitter-jinja2/tree-sitter-jinja",
     "vscode-languageclient": "^9.0.1"
   }
 }

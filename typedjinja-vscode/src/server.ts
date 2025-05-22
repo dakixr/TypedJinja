@@ -20,8 +20,6 @@ import * as fs from 'fs';
 import * as url from 'url';
 import { spawnSync } from 'child_process';
 import * as process from 'process';
-import Parser from 'tree-sitter';
-import Jinja2 from 'tree-sitter-jinja';
 
 // Create a connection for the server
 const connection = createConnection(ProposedFeatures.all);
@@ -41,54 +39,78 @@ logToClient(`[TypedJinja LSP] Templates root directory: ${TEMPLATES_ROOT}`);
 // Create a simple text document manager
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
-// Init Tree-sitter for Jinja2
-const tsParser = new Parser();
-// @ts-ignore: native binding has no TS types, cast to Language
-tsParser.setLanguage(Jinja2);
-
-// Extract base expr / partial via Tree-sitter
+// Extract base expr/partial via Python LSP context
 function getExprAndPartialAttr(
   doc: TextDocument,
   position: { line: number; character: number }
 ): { expr: string; partial: string; inFnArgs?: boolean } | null {
-  const tree = tsParser.parse(doc.getText());
-  const point = { row: position.line, column: position.character };
-  const node = tree.rootNode.namedDescendantForPosition(point);
-  if (!node) return null;
-  logToClient(`[Tree-sitter] node at cursor: ${node.type} '${node.text}'`);
-  // simple cases; extend with your grammar
-  if (node.type === 'variable' || node.type === 'identifier') {
-    return { expr: node.text, partial: '', inFnArgs: false };
+  const templatePath = url.fileURLToPath(doc.uri);
+  const pythonExec = process.env.PYTHON_PATH || 'python3';
+  const args = [
+    '-m',
+    'typedjinja.lsp_server',
+    'context',
+    templatePath,
+    String(position.line + 1),
+    String(position.character),
+  ];
+  logToClient(`[Context] Invoking: ${pythonExec} ${args.join(' ')}`);
+  const result = spawnSync(pythonExec, args, { encoding: 'utf8' });
+  if (result.error || result.stderr) {
+    logToClient(`[Context ERROR] ${result.error ?? result.stderr}`);
+    return null;
   }
-  // Fallback for attribute access inside a render_expression
-  if (node.type === 'render_expression') {
-    const lineText = doc.getText({
-      start: { line: position.line, character: 0 },
-      end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
-    });
-    const before = lineText.slice(0, position.character);
-    const m = before.match(/([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z0-9_]*)$/);
-    if (m) {
-      const [, obj, part] = m;
-      logToClient(`[Fallback] attribute completion for obj='${obj}', partial='${part}'`);
-      return { expr: obj, partial: part, inFnArgs: false };
-    }
+  try {
+    return JSON.parse(result.stdout);
+  } catch (e) {
+    logToClient(`[Context Parse ERROR] ${result.stdout}`);
+    return null;
   }
-  return null;
 }
 
-// Find full word under cursor via Tree-sitter
+// Find full word under cursor via regex
 function getWordAt(
   doc: TextDocument,
   position: { line: number; character: number }
 ): string | null {
-  const tree = tsParser.parse(doc.getText());
-  const point = { row: position.line, column: position.character };
-  const node = tree.rootNode.namedDescendantForPosition(point);
-  if (node && (node.type === 'identifier' || node.type === 'variable')) {
-    return node.text;
+  const lineText = doc.getText({
+    start: { line: position.line, character: 0 },
+    end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
+  });
+
+  // Iterate from the character at the position outwards to find word boundaries
+  let start = position.character;
+  let end = position.character;
+
+  // Check if cursor is on a word character to begin with
+  if (start > 0 && !/[A-Za-z0-9_]/.test(lineText[start -1])){
+    // if cursor is at the beginning of a word, test char at position.character
+    if(!/[A-Za-z0-9_]/.test(lineText[start])){
+        return null;
+    }
+  } else if (start > 0 && !/[A-Za-z0-9_]/.test(lineText[start])) {
+    // If cursor is not on a word character (e.g. whitespace, symbol), check one char back
+    // This helps when cursor is immediately after a word
+    if (start > 0 && /[A-Za-z0-9_]/.test(lineText[start - 1])) {
+        start--; // Move to the last character of the potential word
+        end = start;
+    } else {
+        return null; // Not on or immediately after a word character
+    }
   }
-  return null;
+
+  // Expand left
+  while (start > 0 && /[A-Za-z0-9_]/.test(lineText[start - 1])) {
+    start--;
+  }
+
+  // Expand right
+  while (end < lineText.length && /[A-Za-z0-9_]/.test(lineText[end])) {
+    end++;
+  }
+
+  const word = lineText.slice(start, end);
+  return word && word.length > 0 ? word : null;
 }
 
 // Parse .pyi stub file to get top-level variable names, types, docs
@@ -142,7 +164,7 @@ connection.onCompletion(
     const pos = textDocumentPosition.position;
     const ctx = getExprAndPartialAttr(doc, pos);
     if (!ctx) {
-      logToClient('No Tree-sitter context for completions, falling back to top-level variables');
+      logToClient('No context for completions, falling back to top-level variables');
       // Fallback: parse stub for top-level variables
       const stubVars = parseStubFile(stubPath);
       return Object.entries(stubVars).map(([name, info]) => ({
@@ -205,99 +227,89 @@ connection.onCompletion(
   }
 );
 
-// Utility: Find all macro definitions in a document using Tree-sitter
-function findMacroDefinitions(doc: TextDocument): Array<{ name: string; node: any }> {
-  const tree = tsParser.parse(doc.getText());
-  const macros: Array<{ name: string; node: any }> = [];
-  function walk(node: any) {
-    if (node.type === 'macro_statement') {
-      // Recursively find the identifier child representing the macro name
-      function findId(n: any): any {
-        if (n.type === 'identifier') return n;
-        for (const c of n.namedChildren || []) {
-          const found = findId(c);
-          if (found) return found;
-        }
-        return null;
-      }
-      const idNode = findId(node);
-      if (idNode) {
-        macros.push({ name: idNode.text, node });
-      }
-    }
-    for (const child of node.namedChildren || []) {
-      walk(child);
-    }
-  }
-  walk(tree.rootNode);
-  return macros;
-}
-
-// Utility: Find macro definition by name in a document
+// Utility: Lookup a macro definition by name via Python LSP CLI
 function findMacroDefinitionByName(doc: TextDocument, macroName: string): { node: any } | null {
-  const defs = findMacroDefinitions(doc);
-  return defs.find(def => def.name === macroName) || null;
+  const templatePath = url.fileURLToPath(doc.uri);
+  const pythonExec = process.env.PYTHON_PATH || 'python3';
+  const result = spawnSync(
+    pythonExec,
+    ['-m', 'typedjinja.lsp_server', 'find_macro_definition', templatePath, macroName],
+    { encoding: 'utf8' }
+  );
+  if (result.error || result.stderr) {
+    logToClient(`[MacroDef ERROR] ${result.error ?? result.stderr}`);
+    return null;
+  }
+  let def;
+  try {
+    def = JSON.parse(result.stdout);
+  } catch (e) {
+    logToClient(`[MacroDef Parse ERROR] ${result.stdout}`);
+    return null;
+  }
+  if (!def.file_path) {
+    return null;
+  }
+  const node = {
+    startPosition: { row: def.line, column: def.col },
+    endPosition: { row: def.line, column: def.col },
+    filePath: def.file_path,
+  };
+  return { node };
 }
 
-// Helper to find import statements and called macros
+// Helper: Determine context for definitions by regex matching include or macro calls
 function getDefinitionContext(
   doc: TextDocument,
   position: { line: number; character: number }
 ): { type: 'macro_call'; name: string; sourceTemplate?: string } | { type: 'include'; target: string } | null {
-  const tree = tsParser.parse(doc.getText());
-  const point = { row: position.line, column: position.character };
-  let node = tree.rootNode.namedDescendantForPosition(point);
+  const lineText = doc.getText({
+    start: { line: position.line, character: 0 },
+    end: { line: position.line, character: Number.MAX_SAFE_INTEGER }
+  });
+  
+  // Include statement detection - Updated logic
+  const includeRegex = /\{\%\s*include\s*['"]([^'"]+)['"]\s*\%\}/g; // Match globally on the line
+  let match;
+  while ((match = includeRegex.exec(lineText)) !== null) {
+    const includeKeywordPart = match[0].match(/\{\%\s*include\s*/)?.[0];
+    const closingTagPart = match[0].match(/\s*\%\}/)?.[0];
+    if (!includeKeywordPart || !closingTagPart) continue;
 
-  if (!node) return null;
+    // Find the start and end of the filename within the full match
+    // The filename is in match[1]. We need its position within match[0].
+    const fullMatch = match[0];
+    const filename = match[1];
+    const filenameStartIndexInFullMatch = fullMatch.indexOf(filename, includeKeywordPart.length);
+    if (filenameStartIndexInFullMatch === -1) continue;
 
-  logToClient(`[Definition] Node at cursor: ${node.type} '${node.text}'`);
+    const filenameStartCol = match.index + filenameStartIndexInFullMatch;
+    const filenameEndCol = filenameStartCol + filename.length;
 
-  // Include statement jump-to-definition
-  if (node.type === 'string_literal' && node.parent?.type === 'include_statement') {
-    // literal text includes quotes
-    const lit = node.text;
-    const target = lit.startsWith('"') || lit.startsWith("'") ? lit.slice(1, -1) : lit;
-    logToClient(`[Definition] Found include target: ${target}`);
-    return { type: 'include', target };
+    // Check if the cursor position is within the filename
+    if (position.character >= filenameStartCol && position.character <= filenameEndCol) {
+      return { type: 'include', target: filename };
+    }
   }
 
-  // Handle imported macro identifiers in the import statement
-  if (node.type === 'identifier') {
+  // Macro call detection (original logic, ensure `before` is defined if used here)
+  const before = lineText.slice(0, position.character); 
+  const callMatch = before.match(/([A-Za-z_][A-Za-z0-9_]*)\s*\($/);
+  if (callMatch) {
+    const name = callMatch[1];
+    // Check for imported macros
     const textAll = doc.getText();
-    const importRegex2 = /\{\%\s*from\s*["']([^"']+)["']\s*import\s*([A-Za-z0-9_,\s]+)\s*\%\}/g;
-    let m2;
-    while ((m2 = importRegex2.exec(textAll)) !== null) {
-      const sourceTemplate = m2[1];
-      const names = m2[2];
-      const importedNames = names.split(',').map(n => n.trim());
-      if (importedNames.includes(node.text)) {
-        logToClient(`[Definition] Imported macro in import statement: ${node.text} from ${sourceTemplate}`);
-        return { type: 'macro_call', name: node.text, sourceTemplate };
+    const importRegex = /\{\%\s*from\s*['"]([^'"]+)['"]\s*import\s*([A-Za-z0-9_,\s]+)\s*\%\}/g;
+    let m;
+    while ((m = importRegex.exec(textAll)) !== null) {
+      const sourceTemplate = m[1];
+      const names = m[2].split(',').map(n => n.trim());
+      if (names.includes(name)) {
+        return { type: 'macro_call', name, sourceTemplate };
       }
     }
-  }
-
-  // Check if cursor is on a function_call (potential macro call)
-  if (node.type === 'identifier' && node.parent?.type === 'function_call') {
-    const macroName = node.text;
-    // Look for import statement
-    const importRegex = /\{\%\s*from\s*["']([^"']+)["']\s*import\s*([A-Za-z0-9_,\s]+)\%\}/g;
-    let match;
-    const text = doc.getText();
-    while ((match = importRegex.exec(text)) !== null) {
-      const sourceTemplate = match[1];
-      const importedNames = match[2].split(',').map(name => name.trim());
-      if (importedNames.includes(macroName)) {
-        logToClient(`[Definition] Found imported macro call: ${macroName} from ${sourceTemplate}`);
-        return { type: 'macro_call', name: macroName, sourceTemplate };
-      }
-    }
-    // If not found in imports, check for same-file macro definition
-    const macroDef = findMacroDefinitionByName(doc, macroName);
-    if (macroDef) {
-      logToClient(`[Definition] Found same-file macro definition: ${macroName}`);
-      return { type: 'macro_call', name: macroName };
-    }
+    // Same-file macro
+    return { type: 'macro_call', name };
   }
   return null;
 }
@@ -308,119 +320,184 @@ connection.onDefinition(
     if (!doc) return null;
 
     logToClient(`[Definition] Request for ${params.textDocument.uri} at L${params.position.line}C${params.position.character}`);
-    // Definition support for @types block via Python CLI
-    const fullDoc = doc.getText();
-    const docLines = fullDoc.split(/\r?\n/);
-    const startTypes = docLines.findIndex(l => l.match(/\{\#\s*@types/));
-    const endTypes = startTypes >= 0 ? docLines.findIndex((l,i) => i > startTypes && l.match(/#\}/)) : -1;
-    if (startTypes >= 0 && endTypes >= startTypes && params.position.line >= startTypes && params.position.line <= endTypes) {
+    const wordAtCursor = getWordAt(doc, params.position); // Get word for broader checks
+    logToClient(`[Definition Debug WordAtCursor] '${wordAtCursor}'`);
+
+    // 1. Handle @types block definitions (Jedi-based)
+    const fullDocText = doc.getText();
+    const docLines = fullDocText.split(/\r?\n/);
+    const typesBlockStartLine = docLines.findIndex(l => l.match(/\{\#\s*@types/));
+    const typesBlockEndLine = typesBlockStartLine >= 0 ? docLines.findIndex((l,i) => i > typesBlockStartLine && l.match(/#\}/)) : -1;
+
+    if (typesBlockStartLine >= 0 && typesBlockEndLine >= typesBlockStartLine && 
+        params.position.line >= typesBlockStartLine && params.position.line <= typesBlockEndLine) {
       const lineText = docLines[params.position.line];
-      const idMatch = /[A-Za-z_][A-Za-z0-9_]*/g;
-      let m;
-      while ((m = idMatch.exec(lineText))) {
-        const [word] = m;
-        const col = m.index;
-        if (params.position.character >= col && params.position.character <= col + word.length) {
-          const templatePath = url.fileURLToPath(doc.uri);
-          const stubPath = (() => {
-            const p = require('path');
-            const dir = p.dirname(templatePath);
-            const base = p.basename(templatePath, '.jinja');
-            return p.join(dir, '__pycache__', base + '.pyi');
-          })();
-          if (!fs.existsSync(stubPath)) break;
+      // Use wordAtCursor if it's on the current line and matches, otherwise try to extract from line again.
+      // This is to ensure we use the precise word from the @types block context.
+      let currentWordInTypesBlock = wordAtCursor;
+      if (!currentWordInTypesBlock || docLines[params.position.line].indexOf(currentWordInTypesBlock) === -1) {
+        const idMatch = /[A-Za-z_][A-Za-z0-9_]*/g;
+        let m;
+        while ((m = idMatch.exec(lineText))) {
+            const [extractedWord] = m;
+            const col = m.index;
+            if (params.position.character >= col && params.position.character <= col + extractedWord.length) {
+                currentWordInTypesBlock = extractedWord;
+                break;
+            }
+        }
+      }
+      
+      if (currentWordInTypesBlock) {
+        logToClient(`[Definition @types] Word: '${currentWordInTypesBlock}'`);
+        const templatePath = url.fileURLToPath(doc.uri);
+        const stubPath = (() => {
+          const p = require('path');
+          const dir = p.dirname(templatePath);
+          const base = p.basename(templatePath, '.jinja');
+          return p.join(dir, '__pycache__', base + '.pyi');
+        })();
+        if (fs.existsSync(stubPath)) {
           const pythonExec = process.env.PYTHON_PATH || 'python3';
           const result = spawnSync(
             pythonExec,
-            ['-m', 'typedjinja.lsp_server', 'definition', stubPath, word],
+            ['-m', 'typedjinja.lsp_server', 'definition', stubPath, currentWordInTypesBlock],
             { encoding: 'utf8' }
           );
           if (result.error) {
-            logToClient(`[Definition ERROR] ${result.error}`);
-            break;
+            logToClient(`[Definition @types ERROR] ${result.error}`);
+          } else if (result.stderr) {
+            logToClient(`[Definition @types STDERR] ${result.stderr}`);
+          } else {
+            try {
+              const defs: any[] = JSON.parse(result.stdout);
+              logToClient(`[Definition @types Result] ${JSON.stringify(defs)}`);
+              const locs = defs.map(d => ({
+                uri: url.pathToFileURL(d.file_path).toString(),
+                range: Range.create(d.line, d.col, d.end_line, d.end_col),
+              }));
+              if (locs.length > 0) return locs;
+            } catch (e) {
+              logToClient(`[Definition @types Parse ERROR] ${result.stdout}`);
+            }
           }
-          let defs: any[] = [];
-          try {
-            defs = JSON.parse(result.stdout);
-          } catch (e) {
-            logToClient(`[Definition ERROR] Invalid JSON: ${result.stdout}`);
-            break;
-          }
-          const locs = defs.map(d => ({
-            uri: url.pathToFileURL(d.file_path).toString(),
-            range: Range.create(d.line, d.col, d.end_line, d.end_col),
-          }));
-          return locs.length ? locs : null;
         }
       }
-    }
+    } // End @types block handling
+
+    // 2. Handle include statements and macro calls/imports
     const context = getDefinitionContext(doc, params.position);
+    logToClient(`[Definition Debug Context] ${JSON.stringify(context)}`);
 
     // Handle include definitions
     if (context?.type === 'include') {
       const rel = context.target;
       if (!TEMPLATES_ROOT) {
-        logToClient('[Definition] TEMPLATES_ROOT not set. Cannot resolve include.');
+        logToClient('[Definition Include] TEMPLATES_ROOT not set. Cannot resolve include.');
         return null;
       }
       const path = require('path');
       const abs = path.resolve(TEMPLATES_ROOT, rel);
-      logToClient(`[Definition] Resolving include path: ${abs}`);
+      logToClient(`[Definition Include] Resolving include path: ${abs}`);
       try {
         fs.accessSync(abs);
+        const uri2 = url.pathToFileURL(abs).toString();
+        return [{ uri: uri2, range: Range.create(0, 0, 0, 0) }];
       } catch (e) {
-        logToClient(`[Definition] Include target not found: ${abs}`);
+        logToClient(`[Definition Include] Target not found: ${abs}`);
         return null;
       }
-      const uri2 = url.pathToFileURL(abs).toString();
-      // Jump to start of file
-      return [{ uri: uri2, range: Range.create(0, 0, 0, 0) }];
     }
 
+    // Handle macro definitions (from call sites via getDefinitionContext)
     if (context?.type === 'macro_call') {
       const macroName = context.name;
-      // Imported macro: resolve in imported file
-      if (context.sourceTemplate) {
+      const sourceTemplate = context.sourceTemplate;
+      logToClient(`[Definition MacroCall] Name: '${macroName}', Source: '${sourceTemplate || 'current file'}'`);
+      let targetDoc = doc;
+      let targetUri = doc.uri;
+      let targetTemplateFsPath = url.fileURLToPath(doc.uri);
+
+      if (sourceTemplate) { // Imported macro
         if (!TEMPLATES_ROOT) {
-          logToClient('[Definition] TEMPLATES_ROOT not set. Cannot resolve imported macro.');
+          logToClient('[Definition MacroCallImport] TEMPLATES_ROOT not set.');
           return null;
         }
         const path = require('path');
-        const absoluteSourcePath = path.resolve(TEMPLATES_ROOT, context.sourceTemplate);
-        logToClient(`[Definition] Looking for macro '${macroName}' in '${absoluteSourcePath}'`);
-        let fileText: string;
+        targetTemplateFsPath = path.resolve(TEMPLATES_ROOT, sourceTemplate);
+        logToClient(`[Definition MacroCallImport] Absolute source path: ${targetTemplateFsPath}`);
         try {
-          fileText = fs.readFileSync(absoluteSourcePath, 'utf8');
+          const fileText = fs.readFileSync(targetTemplateFsPath, 'utf8');
+          targetDoc = TextDocument.create(url.pathToFileURL(targetTemplateFsPath).toString(), 'jinja', 1, fileText);
+          targetUri = targetDoc.uri;
         } catch (e) {
-          logToClient(`[Definition ERROR] Failed to read source template: ${e}`);
+          logToClient(`[Definition MacroCallImport ERROR] Failed to read source template: ${e}`);
           return null;
         }
-        const tempDoc = TextDocument.create('file://' + absoluteSourcePath, 'jinja', 1, fileText);
-        const macroDef = findMacroDefinitionByName(tempDoc, macroName);
-        if (macroDef) {
-          const node = macroDef.node;
-          const start = node.startPosition;
-          const end = node.endPosition;
-          return [{
-            uri: 'file://' + absoluteSourcePath,
-            range: Range.create(start.row, start.column, end.row, end.column)
-          }];
-        }
-        return null;
-      } else {
-        // Same-file macro
-        const macroDef = findMacroDefinitionByName(doc, macroName);
-        if (macroDef) {
-          const node = macroDef.node;
-          const start = node.startPosition;
-          const end = node.endPosition;
-          return [{
-            uri: doc.uri,
-            range: Range.create(start.row, start.column, end.row, end.column)
-          }];
+      }
+      
+      const macroDef = findMacroDefinitionByName(targetDoc, macroName);
+      if (macroDef?.node) {
+        const { startPosition, endPosition } = macroDef.node;
+        return [{
+          uri: targetUri,
+          range: Range.create(startPosition.row, startPosition.column, endPosition.row, endPosition.column)
+        }];
+      }
+      logToClient(`[Definition MacroCall] Macro '${macroName}' not found by findMacroDefinitionByName.`);
+      return null;
+    }
+
+    // Fallback: If getDefinitionContext didn't find a macro call (e.g., cursor on import statement)
+    // try to find definition for wordAtCursor if it's an imported macro name.
+    if (wordAtCursor) {
+      logToClient(`[Definition Fallback] Checking if '${wordAtCursor}' is an imported macro name.`);
+      const importRegex = /\{\%\s*from\s*['"]([^'"]+)['"]\s*import\s*([A-Za-z0-9_,\s]+)\s*\%\}/g;
+      let m;
+      let sourceFileForImportedWord: string | undefined;
+
+      while ((m = importRegex.exec(fullDocText)) !== null) {
+        const sourceFile = m[1];
+        const importedNames = m[2].split(',').map(n => n.trim());
+        if (importedNames.includes(wordAtCursor)) {
+          sourceFileForImportedWord = sourceFile;
+          break;
         }
       }
+
+      if (sourceFileForImportedWord) {
+        logToClient(`[Definition FallbackImport] '${wordAtCursor}' is imported from '${sourceFileForImportedWord}'.`);
+        if (!TEMPLATES_ROOT) {
+          logToClient('[Definition FallbackImport] TEMPLATES_ROOT not set.');
+          return null;
+        }
+        const path = require('path');
+        const targetTemplateFsPath = path.resolve(TEMPLATES_ROOT, sourceFileForImportedWord);
+        logToClient(`[Definition FallbackImport] Absolute source path: ${targetTemplateFsPath}`);
+        let targetDoc;
+        let targetUri;
+        try {
+          const fileText = fs.readFileSync(targetTemplateFsPath, 'utf8');
+          targetUri = url.pathToFileURL(targetTemplateFsPath).toString();
+          targetDoc = TextDocument.create(targetUri, 'jinja', 1, fileText);
+        } catch (e) {
+          logToClient(`[Definition FallbackImport ERROR] Failed to read source template: ${e}`);
+          return null;
+        }
+        
+        const macroDef = findMacroDefinitionByName(targetDoc, wordAtCursor);
+        if (macroDef?.node) {
+          const { startPosition, endPosition } = macroDef.node;
+          return [{
+            uri: targetUri,
+            range: Range.create(startPosition.row, startPosition.column, endPosition.row, endPosition.column)
+          }];
+        }
+        logToClient(`[Definition FallbackImport] Macro '${wordAtCursor}' not found in '${sourceFileForImportedWord}'.`);
+      }
     }
+
+    logToClient(`[Definition] No definition found for '${wordAtCursor || 'cursor position'}'.`);
     return null;
   }
 );
@@ -428,110 +505,124 @@ connection.onDefinition(
 // Enhanced hover for macros (same-file and imported)
 connection.onHover(
   async (_params, _token): Promise<Hover | null> => {
-    logToClient('Hover request received');
     const doc = documents.get(_params.textDocument.uri);
-    if (!doc) {
-      logToClient('No document found for hover request');
-      return null;
-    }
+    if (!doc) return null;
+
+    const pythonExec = process.env.PYTHON_PATH || 'python3';
     const word = getWordAt(doc, _params.position);
-    if (!word) {
-      return null;
+    logToClient(`[Hover Debug Word] '${word}'`);
+    if (!word) return null;
+
+    const templatePath = url.fileURLToPath(doc.uri);
+    let result;
+    let info: { type?: string; doc?: string } = {};
+
+    const defContext = getDefinitionContext(doc, _params.position); // For actual call sites
+    logToClient(`[Hover Debug DefContext] ${JSON.stringify(defContext)}`);
+
+    let performedImportedMacroHover = false;
+
+    // Priority 1: Hovering on an actual macro call site identified by getDefinitionContext
+    if (defContext?.type === 'macro_call' && defContext.name === word && defContext.sourceTemplate) {
+      if (!TEMPLATES_ROOT) {
+        logToClient('[HoverImportedMacroCall] TEMPLATES_ROOT not set. Cannot resolve imported macro hover.');
+      } else {
+        const path = require('path');
+        const absoluteSourcePath = path.resolve(TEMPLATES_ROOT, defContext.sourceTemplate);
+        logToClient(`[HoverImportedMacroCall] Looking for macro '${word}' in source '${absoluteSourcePath}'`);
+        const args = ['-m', 'typedjinja.lsp_server', 'hover_macro', absoluteSourcePath, word];
+        logToClient(`[HoverImportedMacroCall] Invoking: ${pythonExec} ${args.join(' ')}`);
+        result = spawnSync(pythonExec, args, { encoding: 'utf8' });
+        if (result.error || result.stderr) {
+          logToClient(`[HoverImportedMacroCall ERROR] ${result.error ?? result.stderr}`);
+        } else {
+          try {
+            info = JSON.parse(result.stdout);
+            performedImportedMacroHover = true;
+          } catch {
+            logToClient(`[HoverImportedMacroCall Parse ERROR] ${result.stdout}`);
+          }
+        }
+      }
     }
-    // Check if this is a macro (same-file)
-    let macroDef = findMacroDefinitionByName(doc, word);
-    let macroDoc = doc;
-    // If not found, check if imported
-    if (!macroDef) {
-      // Look for import statement
-      const importRegex = /\{\%\s*from\s*["']([^"']+)["']\s*import\s*([A-Za-z0-9_,\s]+)\%\}/g;
-      let match;
-      const text = doc.getText();
-      while ((match = importRegex.exec(text)) !== null) {
-        const sourceTemplate = match[1];
-        const importedNames = match[2].split(',').map(name => name.trim());
+    
+    // Priority 2: If not a call site, or call site failed, check if the word itself is an imported macro name anywhere
+    if (!performedImportedMacroHover) {
+      const textAll = doc.getText();
+      const importRegex = /\{\%\s*from\s*['"]([^'"]+)['"]\s*import\s*([A-Za-z0-9_,\s]+)\s*\%\}/g;
+      let m;
+      let sourceTemplateForWord: string | undefined;
+      let matchedImportedName: string | undefined;
+
+      while ((m = importRegex.exec(textAll)) !== null) {
+        const currentSourceTemplate = m[1];
+        const importedNames = m[2].split(',').map(n => n.trim());
         if (importedNames.includes(word)) {
-          if (!TEMPLATES_ROOT) return null;
-          const path = require('path');
-          const absoluteSourcePath = path.resolve(TEMPLATES_ROOT, sourceTemplate);
-          if (!fs.existsSync(absoluteSourcePath)) return null;
-          const fileText = fs.readFileSync(absoluteSourcePath, 'utf8');
-          macroDoc = TextDocument.create('file://' + absoluteSourcePath, 'jinja', 1, fileText);
-          macroDef = findMacroDefinitionByName(macroDoc, word);
+          sourceTemplateForWord = currentSourceTemplate;
+          matchedImportedName = word; // The word itself is the imported name
           break;
         }
       }
-    }
-    if (macroDef) {
-      const node = macroDef.node;
-      // First, try to extract @typedmacro documentation
-      const fullText = macroDoc.getText();
-      const tmRegex = /\{\#\s*@typedmacro([\s\S]*?)\#\}/g;
-      let tmMatch;
-      while ((tmMatch = tmRegex.exec(fullText))) {
-        const block = tmMatch[1];
-        if (block.includes(`${word}(`)) {
-          const lines = block.trim().split(/\r?\n/).map(l => l.trim());
-          const signatureLine = lines[0];  // e.g. one_macro(name: str)
-          const docLines = lines.slice(1).map(l => l.trim());
-          const signature = '```jinja2\n' + `{% macro ${signatureLine} %}` + '\n```';
-          const docs = docLines.join('\n');
-          const value = signature + (docs ? '\n\n' + docs : '');
-          return { contents: { kind: MarkupKind.Markdown, value } };
+
+      if (sourceTemplateForWord && matchedImportedName) {
+        if (!TEMPLATES_ROOT) {
+          logToClient('[HoverImportedName] TEMPLATES_ROOT not set. Cannot resolve imported macro hover.');
+        } else {
+          const path = require('path');
+          const absoluteSourcePath = path.resolve(TEMPLATES_ROOT, sourceTemplateForWord);
+          logToClient(`[HoverImportedName] Word '${matchedImportedName}' is imported from '${absoluteSourcePath}'`);
+          const args = ['-m', 'typedjinja.lsp_server', 'hover_macro', absoluteSourcePath, matchedImportedName];
+          logToClient(`[HoverImportedName] Invoking: ${pythonExec} ${args.join(' ')}`);
+          result = spawnSync(pythonExec, args, { encoding: 'utf8' });
+          if (result.error || result.stderr) {
+            logToClient(`[HoverImportedName ERROR] ${result.error ?? result.stderr}`);
+          } else {
+            try {
+              info = JSON.parse(result.stdout);
+              performedImportedMacroHover = true;
+            } catch {
+              logToClient(`[HoverImportedName Parse ERROR] ${result.stdout}`);
+            }
+          }
         }
       }
-      // Fallback: extract signature and docstring from AST
-      let signature = `{% macro ${word}`;
-      // Get arguments if present
-      const argsNode = node.namedChildren.find((c: any) => c.type === 'parameters');
-      if (argsNode) {
-        signature += argsNode.text;
+    }
+
+    // Priority 3: Default hover (stub, then current file for non-imported macro)
+    if (!performedImportedMacroHover) {
+      const stubPath = (() => {
+        const path = require('path');
+        const dir = path.dirname(templatePath);
+        const base = path.basename(templatePath, '.jinja');
+        return path.join(dir, '__pycache__', base + '.pyi');
+      })();
+      // Only proceed if stubPath exists, otherwise, no info for default hover.
+      if (fs.existsSync(stubPath)) { 
+        const line = _params.position?.line ?? 0;
+        const character = _params.position?.character ?? 0;
+        const args = ['-m', 'typedjinja.lsp_server', 'hover', stubPath, word, String(line), String(character), templatePath];
+        logToClient(`[HoverDefault] Invoking: ${pythonExec} ${args.join(' ')}`);
+        result = spawnSync(pythonExec, args, { encoding: 'utf8' });
+        if (result.error || result.stderr) {
+          logToClient(`[HoverDefault ERROR] ${result.error ?? result.stderr}`);
+        } else {
+          try {
+            info = JSON.parse(result.stdout);
+          } catch {
+            logToClient(`[HoverDefault Parse ERROR] ${result.stdout}`);
+          }
+        }
+      } else {
+        logToClient(`[HoverDefault] Stub path ${stubPath} does not exist. Skipping default hover.`);
       }
-      signature += ' %}';
-      // Try to get docstring: first string_literal child
-      const docNode = node.namedChildren.find((c: any) => c.type === 'string_literal');
-      let docstring = docNode ? docNode.text : '';
-      const contents = '```jinja2\n' + signature + '\n```' + (docstring ? '\n\n' + docstring : '');
-      return { contents: { kind: MarkupKind.Markdown, value: contents } };
     }
-    // Fallback: old hover logic
-    const templatePath = url.fileURLToPath(doc.uri);
-    const stubPath = (() => {
-      const path = require('path'),
-        dir = path.dirname(templatePath),
-        base = path.basename(templatePath, '.jinja');
-      return path.join(dir, '__pycache__', base + '.pyi');
-    })();
-    logToClient(`Hover stub at: ${stubPath}`);
-    if (!fs.existsSync(stubPath)) {
-      return null;
-    }
-    logToClient(`Hover word: ${word}`);
-    const pythonExec = process.env.PYTHON_PATH || 'python3';
-    const result = spawnSync(
-      pythonExec,
-      ['-m', 'typedjinja.lsp_server', 'hover', stubPath, word],
-      { encoding: 'utf8' }
-    );
-    if (result.error || result.stderr) {
-      logToClient(`[ERROR] ${result.error ?? result.stderr}`);
-      return null;
-    }
-    let info: { type?: string; doc?: string } = {};
-    try {
-      info = JSON.parse(result.stdout);
-    } catch {
-      return null;
-    }
+
     if (!info.type) {
-      return null;
+        logToClient(`[Hover Result] No type information found for '${word}'. Final info: ${JSON.stringify(info)}`);
+        return null;
     }
-    const contents =
-      '```python\n' + word + ': ' + info.type + '\n```' +
-      (info.doc ? '\n\n' + info.doc : '');
-    return {
-      contents: { kind: MarkupKind.Markdown, value: contents },
-    };
+    const contents = '```python\n' + word + ': ' + info.type + '\n```' + (info.doc ? '\n\n' + info.doc : '');
+    return { contents: { kind: MarkupKind.Markdown, value: contents } };
   }
 );
 

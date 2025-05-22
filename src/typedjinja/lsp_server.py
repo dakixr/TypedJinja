@@ -5,8 +5,13 @@ import re
 from pathlib import Path
 
 import jedi
+import tree_sitter_jinja
+from tree_sitter import Language, Parser
 
 from typedjinja.parser import parse_macro_blocks, parse_types_block
+
+JINJA_LANGUAGE = Language(tree_sitter_jinja.language())
+parser = Parser(JINJA_LANGUAGE)
 
 
 def parse_stub(stub: str) -> dict[str, dict[str, str | None]]:
@@ -30,6 +35,8 @@ def main():
             "diagnostics",
             "find_macro_definition",
             "definition",
+            "context",
+            "hover_macro",
         ],
     )
     p.add_argument("path_or_stub")
@@ -118,23 +125,47 @@ def main():
         print(json.dumps(definitions))
         return
 
+    if args.mode == "context":
+        template_path = Path(args.path_or_stub)
+        content = template_path.read_text(encoding="utf-8")
+        code_bytes = content.encode("utf-8")
+        tree = parser.parse(code_bytes)
+        point = (args.line - 1, args.column)
+        # Get the node at the cursor position, fallback to root
+        node = tree.root_node.descendant_for_point_range(point, point) or tree.root_node
+        start_byte, end_byte = node.start_byte, node.end_byte
+        node_text = code_bytes[start_byte:end_byte].decode("utf-8")
+        result = {"expr": node_text, "partial": "", "inFnArgs": False}
+        print(json.dumps(result))
+        return
+
     stub_path = Path(args.path_or_stub)
     stub = stub_path.read_text()
 
     if args.mode == "hover":
         info = parse_stub(stub).get(args.expr_or_macro_name, {})
         if not info or not info.get("type"):
-            derived_template_path = stub_path.parent.parent / f"{stub_path.stem}.jinja"
-            template_for_macros = (
-                Path(args.template_file_path)
-                if args.template_file_path and Path(args.template_file_path).exists()
-                else derived_template_path
-            )
+            # Try to get macro info from the template_file_path if provided
+            # This part primarily helps for macros defined in the SAME file,
+            # or if template_file_path happens to be the source of an imported macro (less likely setup from client)
+            template_for_macros_path_str = (
+                args.template_file_path
+            )  # Use the explicitly passed template_file_path
+
+            if template_for_macros_path_str:
+                derived_template_path = Path(template_for_macros_path_str)
+            else:  # Fallback if no template_file_path is given (e.g. direct CLI usage for stub hover)
+                derived_template_path = (
+                    stub_path.parent.parent / f"{stub_path.stem}.jinja"
+                )
+
+            template_for_macros = derived_template_path
 
             try:
                 template_content = template_for_macros.read_text(encoding="utf-8")
             except Exception:
                 template_content = ""
+
             macros = parse_macro_blocks(template_content)
             for macro in macros:
                 if macro.get("name") == args.expr_or_macro_name:
@@ -142,6 +173,24 @@ def main():
                     doc = macro.get("docstring") or ""
                     info = {"type": f"{args.expr_or_macro_name}({params})", "doc": doc}
                     break
+        print(json.dumps(info))
+        return
+
+    if args.mode == "hover_macro":
+        source_template_path = Path(args.path_or_stub)
+        macro_name_to_find = args.expr_or_macro_name
+        info = {}
+        try:
+            template_content = source_template_path.read_text(encoding="utf-8")
+            macros = parse_macro_blocks(template_content)
+            for macro in macros:
+                if macro.get("name") == macro_name_to_find:
+                    params = macro.get("params") or ""
+                    doc = macro.get("docstring") or ""
+                    info = {"type": f"{macro_name_to_find}({params})", "doc": doc}
+                    break
+        except Exception:  # pylint: disable=broad-except
+            pass  # Errors here (e.g. file not found) should result in empty info
         print(json.dumps(info))
         return
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "typedjinja"
-version = "0.1.0"
+version = "0.1.1"
 description = "Type safety and editor intelligence for Jinja2 templates."
 authors = [
     { name = "Daniel Rodriguez Mariblanca", email = "dakixr@gmail.com" }
