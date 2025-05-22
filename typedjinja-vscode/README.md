@@ -17,7 +17,7 @@ LSP support for type-safe Jinja2 templates using TypedJinja.
 - In VSCode, open the Extensions view, click the three dots, and select 'Install from VSIX...'
 
 ## Usage
-Open any `.jinja` file to activate the extension.
+Open any `.jinja` or `.html` file to activate the extension.
 
 ## Contributing
 Contributions are welcome! Please open issues or pull requests on [GitHub](https://github.com/dakixr/TypedJinja).

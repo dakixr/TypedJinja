@@ -49,7 +49,7 @@ TypedJinja brings type safety and editor intelligence to Jinja2 templates by all
 3. **Generate Stubs:**
    Run the CLI:
    ```sh
-   python -m typedjinja path/to/template.jinja
+   python -m typedjinja path/to/template.html
    ```
    This creates `path/to/template.pyi` in the same directory as your template.
 
@@ -117,18 +117,26 @@ Contributions are welcome! Please see `CURSOR_RULES.md` for development guidelin
 
 ## Packaging & Publishing
 
-- **Build extension:**
-  ```sh
-  pnpm run compile
-  ```
-- **Package VSIX:**
-  ```sh
-  npx vsce package --no-dependencies
-  ```
-- **Publish to Marketplace:** Update `package.json` with proper `publisher`, `repository`, and `license`, then:
-  ```sh
-  vsce publish
-  ```
+1. Navigate to the VSCode extension directory:
+   ```sh
+   cd typedjinja-vscode
+   ```
+2. Install dependencies:
+   ```sh
+   yarn install
+   ```
+3. Compile TypeScript sources:
+   ```sh
+   yarn compile
+   ```
+4. Package the extension (produces a `.vsix` file):
+   ```sh
+   yarn vsce package
+   ```
+5. (Optional) Publish to Marketplace:
+   ```sh
+   yarn vsce publish
+   ```
 
 ## Usage
 
@@ -140,24 +148,17 @@ Contributions are welcome! Please see `CURSOR_RULES.md` for development guidelin
    created_at: datetime
    data: dict[str, str]
    #}
-   {% from "another_template.jinja" import one_macro %}
+   {% from "another_template.html" import one_macro %}
    ```
 
 2. **Stub Generation (offline or on save):**
    ```sh
-   python -m typedjinja path/to/template.jinja
+   python -m typedjinja path/to/template.html
    ```
 
-3. **Install VSCode Extension:**
-   - Download the `.vsix` package from the releases or build locally:
-     ```sh
-     cd typedjinja-vscode
-     pnpm install
-     pnpm run compile
-     npx vsce package --no-dependencies
-     ```
-   - In VSCode: `Extensions: Install from VSIX...`, select the generated `typedjinja-vscode-0.0.1.vsix`.
+3. **Install VS Code Extension:**
+   - In VS Code, open the command palette (⇧⌘P) and choose `Extensions: Install from VSIX...`, then select the generated `.vsix` file (e.g., `typedjinja-vscode-0.0.2.vsix`).
 
 4. **Editor Experience:**
-   - Open your `.jinja` file.
+   - Open your `.html` file.
    - Completions, hover, go-to-definition, and diagnostics will work out of the box for variables, macros, includes, and types. 

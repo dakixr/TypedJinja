@@ -4,7 +4,7 @@ from datetime import datetime
 created_at: datetime
 data: dict[str, str]
 #}
-{% from "another_template.jinja" import one_macro %}
+{% from "another_template.html" import one_macro %}
 
 Hello, {{ data["name"] }}!
 Your account was created at {{ created_at }}

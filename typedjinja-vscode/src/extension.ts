@@ -88,10 +88,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Client options
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'jinja' }],
+    documentSelector: [
+      { scheme: 'file', language: 'jinja' },
+      { scheme: 'file', language: 'jinja-html' }
+    ],
     synchronize: {
       fileEvents: [
         vscode.workspace.createFileSystemWatcher('**/*.jinja'),
+        vscode.workspace.createFileSystemWatcher('**/*.html'),
         vscode.workspace.createFileSystemWatcher('**/__pycache__/*.pyi'),
       ]
     },
@@ -116,7 +120,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Automatic stub generation on save
   vscode.workspace.onDidSaveTextDocument(async (document) => {
-    if (document.languageId === 'jinja' && document.uri.scheme === 'file') {
+    if ((document.languageId === 'jinja' || document.languageId === 'jinja-html') && document.uri.scheme === 'file') {
       const jinjaPath = document.uri.fsPath;
       const pythonPath = await getPythonInterpreterPath();
       if (!pythonPath) {

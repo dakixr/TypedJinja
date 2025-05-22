@@ -151,7 +151,7 @@ connection.onCompletion(
     const stubPath = (() => {
       const path = require('path'),
         dir = path.dirname(templatePath),
-        base = path.basename(templatePath, '.jinja');
+        base = path.parse(templatePath).name;
       return path.join(dir, '__pycache__', base + '.pyi');
     })();
     logToClient(`Template path: ${templatePath}`);
@@ -345,7 +345,12 @@ connection.onDefinition(
       if (currentWordInTypesBlock) {
         logToClient(`[Definition @types] Word: '${currentWordInTypesBlock}'`);
         const templatePath = url.fileURLToPath(doc.uri);
-        const stubPath = (() => { const p=require('path'); return p.join(p.dirname(templatePath), '__pycache__', p.basename(templatePath, '.jinja') + '.pyi'); })();
+        const stubPath = (() => {
+          const p = require('path');
+          const dir = p.dirname(templatePath);
+          const base = p.parse(templatePath).name;
+          return p.join(dir, '__pycache__', base + '.pyi');
+        })();
         if (fs.existsSync(stubPath)) {
             const pythonExec = process.env.PYTHON_PATH || 'python3';
             const result = spawnSync(pythonExec, ['-m', 'typedjinja.lsp_server', 'definition', stubPath, currentWordInTypesBlock], { encoding: 'utf8' });
@@ -549,7 +554,7 @@ connection.onHover(
     const stubPath = (() => {
       const p = require('path');
       const dir = p.dirname(templatePath);
-      const base = p.basename(templatePath, '.jinja');
+      const base = p.parse(templatePath).name;
       return p.join(dir, '__pycache__', base + '.pyi');
     })();
     if (fs.existsSync(stubPath)) {
@@ -590,7 +595,7 @@ async function runDiagnostics(doc: TextDocument) {
   const stubPath = (() => {
     const path = require('path');
     const dir = path.dirname(templatePath);
-    const base = path.basename(templatePath, '.jinja');
+    const base = path.parse(templatePath).name;
     return path.join(dir, '__pycache__', base + '.pyi');
   })();
   logToClient(`[Diagnostics] Stub path: ${stubPath}`);
@@ -647,12 +652,25 @@ documents.onDidOpen(async (change) => {
 connection.onDidChangeWatchedFiles((params) => {
   logToClient(`[LSP] Watched files changed: ${JSON.stringify(params.changes)}`);
   for (const change of params.changes) {
-    if ((change.type === FileChangeType.Created || change.type === FileChangeType.Changed) && change.uri.endsWith('.pyi')) {
+    if ((change.type === FileChangeType.Created || change.type === FileChangeType.Changed)
+        && change.uri.endsWith('.pyi')) {
       const stubFs = url.fileURLToPath(change.uri);
       const path = require('path');
       const cacheDir = path.dirname(stubFs);
-      const templateFs = path.join(path.dirname(cacheDir), path.basename(stubFs, '.pyi') + '.jinja');
-      const templateUri = url.pathToFileURL(templateFs).toString();
+      const templateDir = path.dirname(cacheDir);
+      const base = path.parse(stubFs).name;
+      const jinjaPath = path.join(templateDir, base + '.jinja');
+      const htmlPath = path.join(templateDir, base + '.html');
+      let templateFs: string | undefined;
+      if (fs.existsSync(jinjaPath)) {
+        templateFs = jinjaPath;
+      } else if (fs.existsSync(htmlPath)) {
+        templateFs = htmlPath;
+      } else {
+        logToClient(`[Diagnostics] No template found for stub ${stubFs}`);
+        continue;
+      }
+      const templateUri = url.pathToFileURL(templateFs!).toString();
       const doc = documents.get(templateUri);
       if (doc) {
         logToClient(`[Diagnostics] Re-running diagnostics for: ${templateUri}`);

@@ -20,7 +20,19 @@
           "jinja"
         ],
         "extensions": [
-          ".jinja"
+          ".jinja",
+          ".html"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "jinja-html",
+        "aliases": [
+          "Jinja HTML",
+          "jinja-html"
+        ],
+        "extensions": [
+          ".html"
         ],
         "configuration": "./language-configuration.json"
       }
