@@ -320,181 +320,132 @@ connection.onDefinition(
     if (!doc) return null;
 
     logToClient(`[Definition] Request for ${params.textDocument.uri} at L${params.position.line}C${params.position.character}`);
-    const wordAtCursor = getWordAt(doc, params.position); // Get word for broader checks
+    const wordAtCursor = getWordAt(doc, params.position);
     logToClient(`[Definition Debug WordAtCursor] '${wordAtCursor}'`);
-
-    // 1. Handle @types block definitions (Jedi-based)
     const fullDocText = doc.getText();
+
+    // Path 1: Handle @types block definitions
     const docLines = fullDocText.split(/\r?\n/);
     const typesBlockStartLine = docLines.findIndex(l => l.match(/\{\#\s*@types/));
     const typesBlockEndLine = typesBlockStartLine >= 0 ? docLines.findIndex((l,i) => i > typesBlockStartLine && l.match(/#\}/)) : -1;
-
-    if (typesBlockStartLine >= 0 && typesBlockEndLine >= typesBlockStartLine && 
+    if (typesBlockStartLine >= 0 && typesBlockEndLine >= typesBlockStartLine &&
         params.position.line >= typesBlockStartLine && params.position.line <= typesBlockEndLine) {
+      let currentWordInTypesBlock = '';
       const lineText = docLines[params.position.line];
-      // Use wordAtCursor if it's on the current line and matches, otherwise try to extract from line again.
-      // This is to ensure we use the precise word from the @types block context.
-      let currentWordInTypesBlock = wordAtCursor;
-      if (!currentWordInTypesBlock || docLines[params.position.line].indexOf(currentWordInTypesBlock) === -1) {
-        const idMatch = /[A-Za-z_][A-Za-z0-9_]*/g;
-        let m;
-        while ((m = idMatch.exec(lineText))) {
-            const [extractedWord] = m;
-            const col = m.index;
-            if (params.position.character >= col && params.position.character <= col + extractedWord.length) {
-                currentWordInTypesBlock = extractedWord;
-                break;
-            }
-        }
+      const idMatch = /[A-Za-z_][A-Za-z0-9_]*/g;
+      let m;
+      while ((m = idMatch.exec(lineText))) {
+          const [extractedWord] = m;
+          const col = m.index;
+          if (params.position.character >= col && params.position.character <= col + extractedWord.length) {
+              currentWordInTypesBlock = extractedWord;
+              break;
+          }
       }
-      
       if (currentWordInTypesBlock) {
         logToClient(`[Definition @types] Word: '${currentWordInTypesBlock}'`);
         const templatePath = url.fileURLToPath(doc.uri);
-        const stubPath = (() => {
-          const p = require('path');
-          const dir = p.dirname(templatePath);
-          const base = p.basename(templatePath, '.jinja');
-          return p.join(dir, '__pycache__', base + '.pyi');
-        })();
+        const stubPath = (() => { const p=require('path'); return p.join(p.dirname(templatePath), '__pycache__', p.basename(templatePath, '.jinja') + '.pyi'); })();
         if (fs.existsSync(stubPath)) {
-          const pythonExec = process.env.PYTHON_PATH || 'python3';
-          const result = spawnSync(
-            pythonExec,
-            ['-m', 'typedjinja.lsp_server', 'definition', stubPath, currentWordInTypesBlock],
-            { encoding: 'utf8' }
-          );
-          if (result.error) {
-            logToClient(`[Definition @types ERROR] ${result.error}`);
-          } else if (result.stderr) {
-            logToClient(`[Definition @types STDERR] ${result.stderr}`);
-          } else {
-            try {
-              const defs: any[] = JSON.parse(result.stdout);
-              logToClient(`[Definition @types Result] ${JSON.stringify(defs)}`);
-              const locs = defs.map(d => ({
-                uri: url.pathToFileURL(d.file_path).toString(),
-                range: Range.create(d.line, d.col, d.end_line, d.end_col),
-              }));
-              if (locs.length > 0) return locs;
-            } catch (e) {
-              logToClient(`[Definition @types Parse ERROR] ${result.stdout}`);
-            }
-          }
+            const pythonExec = process.env.PYTHON_PATH || 'python3';
+            const result = spawnSync(pythonExec, ['-m', 'typedjinja.lsp_server', 'definition', stubPath, currentWordInTypesBlock], { encoding: 'utf8' });
+            if (!result.error && result.stdout && result.stdout.trim() !== '') {
+                try {
+                    const defs: any[] = JSON.parse(result.stdout);
+                    const locs = defs.map(d => ({ uri: url.pathToFileURL(d.file_path).toString(), range: Range.create(d.line, d.col, d.end_line, d.end_col) }));
+                    if (locs.length > 0) { logToClient('[Definition @types] Found.'); return locs; }
+                } catch (e) { logToClient(`[Definition @types Parse ERROR] ${result.stdout}`); }
+            } else if (result.error) { logToClient(`[Definition @types ERROR] ${result.error}`); }
+             else if (result.stderr && result.stderr.trim() !== '') { logToClient(`[Definition @types STDERR] ${result.stderr}`); }
         }
       }
     } // End @types block handling
 
-    // 2. Handle include statements and macro calls/imports
     const context = getDefinitionContext(doc, params.position);
     logToClient(`[Definition Debug Context] ${JSON.stringify(context)}`);
 
-    // Handle include definitions
-    if (context?.type === 'include') {
-      const rel = context.target;
-      if (!TEMPLATES_ROOT) {
-        logToClient('[Definition Include] TEMPLATES_ROOT not set. Cannot resolve include.');
-        return null;
-      }
-      const path = require('path');
-      const abs = path.resolve(TEMPLATES_ROOT, rel);
-      logToClient(`[Definition Include] Resolving include path: ${abs}`);
-      try {
-        fs.accessSync(abs);
-        const uri2 = url.pathToFileURL(abs).toString();
-        return [{ uri: uri2, range: Range.create(0, 0, 0, 0) }];
-      } catch (e) {
-        logToClient(`[Definition Include] Target not found: ${abs}`);
-        return null;
-      }
-    }
-
-    // Handle macro definitions (from call sites via getDefinitionContext)
-    if (context?.type === 'macro_call') {
-      const macroName = context.name;
-      const sourceTemplate = context.sourceTemplate;
-      logToClient(`[Definition MacroCall] Name: '${macroName}', Source: '${sourceTemplate || 'current file'}'`);
-      let targetDoc = doc;
-      let targetUri = doc.uri;
-      let targetTemplateFsPath = url.fileURLToPath(doc.uri);
-
-      if (sourceTemplate) { // Imported macro
-        if (!TEMPLATES_ROOT) {
-          logToClient('[Definition MacroCallImport] TEMPLATES_ROOT not set.');
-          return null;
-        }
-        const path = require('path');
-        targetTemplateFsPath = path.resolve(TEMPLATES_ROOT, sourceTemplate);
-        logToClient(`[Definition MacroCallImport] Absolute source path: ${targetTemplateFsPath}`);
+    // Path 2: Handle context-based definitions (include or macro_call)
+    if (context) {
+      if (context.type === 'include') {
+        const rel = context.target;
+        if (!TEMPLATES_ROOT) { logToClient('[Definition Include] TEMPLATES_ROOT not set.'); return null; }
+        const pathModule = require('path');
+        const absPath = pathModule.resolve(TEMPLATES_ROOT, rel);
         try {
-          const fileText = fs.readFileSync(targetTemplateFsPath, 'utf8');
-          targetDoc = TextDocument.create(url.pathToFileURL(targetTemplateFsPath).toString(), 'jinja', 1, fileText);
-          targetUri = targetDoc.uri;
-        } catch (e) {
-          logToClient(`[Definition MacroCallImport ERROR] Failed to read source template: ${e}`);
-          return null;
-        }
+          fs.accessSync(absPath);
+          logToClient(`[Definition Include] Found: ${absPath}`);
+          return [{ uri: url.pathToFileURL(absPath).toString(), range: Range.create(0, 0, 0, 0) }];
+        } catch (e) { logToClient(`[Definition Include] Target not found: ${absPath}`); return null; }
       }
-      
-      const macroDef = findMacroDefinitionByName(targetDoc, macroName);
-      if (macroDef?.node) {
-        const { startPosition, endPosition } = macroDef.node;
-        return [{
-          uri: targetUri,
-          range: Range.create(startPosition.row, startPosition.column, endPosition.row, endPosition.column)
-        }];
-      }
-      logToClient(`[Definition MacroCall] Macro '${macroName}' not found by findMacroDefinitionByName.`);
-      return null;
-    }
 
-    // Fallback: If getDefinitionContext didn't find a macro call (e.g., cursor on import statement)
-    // try to find definition for wordAtCursor if it's an imported macro name.
+      if (context.type === 'macro_call') {
+        const macroName = context.name;
+        const sourceTemplate = context.sourceTemplate;
+        logToClient(`[Definition MacroCall] Name: '${macroName}', Source: '${sourceTemplate || 'current file'}'`);
+        let targetDoc = doc; let targetUri = doc.uri;
+        if (sourceTemplate) {
+          if (!TEMPLATES_ROOT) { logToClient('[Definition MacroCallImport] TEMPLATES_ROOT not set.'); return null; }
+          const pathModule = require('path');
+          const targetTemplateFsPath = pathModule.resolve(TEMPLATES_ROOT, sourceTemplate);
+          try {
+            const fileText = fs.readFileSync(targetTemplateFsPath, 'utf8');
+            targetDoc = TextDocument.create(url.pathToFileURL(targetTemplateFsPath).toString(), 'jinja', 1, fileText);
+            targetUri = targetDoc.uri;
+          } catch (e) { logToClient(`[Definition MacroCallImport ERROR] ${e}`); return null; }
+        }
+        const macroDef = findMacroDefinitionByName(targetDoc, macroName);
+        if (macroDef?.node) {
+          const { startPosition, endPosition } = macroDef.node;
+          logToClient(`[Definition MacroCall] Found definition for '${macroName}'.`);
+          return [{ uri: targetUri, range: Range.create(startPosition.row, startPosition.column, endPosition.row, endPosition.column) }];
+        }
+        logToClient(`[Definition MacroCall] Macro '${macroName}' not found by findMacroDefinitionByName.`);
+        return null; // If context was macro_call, we've handled it or failed to find it.
+      }
+    } // End context handling
+
+    // Path 3: If no context-based definition found, and wordAtCursor exists, try FallbackImport
     if (wordAtCursor) {
-      logToClient(`[Definition Fallback] Checking if '${wordAtCursor}' is an imported macro name.`);
+      let sourceFileForImportedWord: string | undefined;
       const importRegex = /\{\%\s*from\s*['"]([^'"]+)['"]\s*import\s*([A-Za-z0-9_,\s]+)\s*\%\}/g;
       let m;
-      let sourceFileForImportedWord: string | undefined;
-
       while ((m = importRegex.exec(fullDocText)) !== null) {
         const sourceFile = m[1];
         const importedNames = m[2].split(',').map(n => n.trim());
-        if (importedNames.includes(wordAtCursor)) {
-          sourceFileForImportedWord = sourceFile;
-          break;
-        }
+        if (importedNames.includes(wordAtCursor)) { sourceFileForImportedWord = sourceFile; break; }
       }
 
       if (sourceFileForImportedWord) {
         logToClient(`[Definition FallbackImport] '${wordAtCursor}' is imported from '${sourceFileForImportedWord}'.`);
-        if (!TEMPLATES_ROOT) {
-          logToClient('[Definition FallbackImport] TEMPLATES_ROOT not set.');
-          return null;
-        }
-        const path = require('path');
-        const targetTemplateFsPath = path.resolve(TEMPLATES_ROOT, sourceFileForImportedWord);
-        logToClient(`[Definition FallbackImport] Absolute source path: ${targetTemplateFsPath}`);
-        let targetDoc;
-        let targetUri;
+        if (!TEMPLATES_ROOT) { logToClient('[Definition FallbackImport] TEMPLATES_ROOT not set.'); return null; }
+        const pathModule = require('path');
+        const targetTemplateFsPath = pathModule.resolve(TEMPLATES_ROOT, sourceFileForImportedWord);
         try {
           const fileText = fs.readFileSync(targetTemplateFsPath, 'utf8');
-          targetUri = url.pathToFileURL(targetTemplateFsPath).toString();
-          targetDoc = TextDocument.create(targetUri, 'jinja', 1, fileText);
-        } catch (e) {
-          logToClient(`[Definition FallbackImport ERROR] Failed to read source template: ${e}`);
-          return null;
-        }
-        
-        const macroDef = findMacroDefinitionByName(targetDoc, wordAtCursor);
-        if (macroDef?.node) {
-          const { startPosition, endPosition } = macroDef.node;
-          return [{
-            uri: targetUri,
-            range: Range.create(startPosition.row, startPosition.column, endPosition.row, endPosition.column)
-          }];
-        }
-        logToClient(`[Definition FallbackImport] Macro '${wordAtCursor}' not found in '${sourceFileForImportedWord}'.`);
+          const targetUri = url.pathToFileURL(targetTemplateFsPath).toString();
+          const targetDocForImport = TextDocument.create(targetUri, 'jinja', 1, fileText); // Use new var name
+          const macroDef = findMacroDefinitionByName(targetDocForImport, wordAtCursor);
+          if (macroDef?.node) {
+            const { startPosition, endPosition } = macroDef.node;
+            logToClient(`[Definition FallbackImportSuccess] Jumping to '${wordAtCursor}' in '${sourceFileForImportedWord}'`);
+            return [{ uri: targetUri, range: Range.create(startPosition.row, startPosition.column, endPosition.row, endPosition.column) }];
+          }
+          logToClient(`[Definition FallbackImport] Macro '${wordAtCursor}' not found in '${sourceFileForImportedWord}'.`);
+          // Do not return null here, allow fall through to SameFileFallback if this path fails
+        } catch (e) { logToClient(`[Definition FallbackImport ERROR] ${e}`); /* Allow fall through */ }
+      } else {
+        logToClient(`[Definition FallbackImport] '${wordAtCursor}' not found in any import statements.`);
       }
+      
+      // Path 4: If FallbackImport didn't return, try SameFileFallback (still within if(wordAtCursor) block)
+      logToClient(`[Definition SameFileFallback] Checking if '${wordAtCursor}' is a macro in the current file: ${doc.uri}`);
+      const macroDef = findMacroDefinitionByName(doc, wordAtCursor);
+      if (macroDef?.node) {
+          const { startPosition, endPosition } = macroDef.node;
+          logToClient(`[Definition SameFileFallback] Found '${wordAtCursor}' in current file.`);
+          return [{ uri: doc.uri, range: Range.create(startPosition.row, startPosition.column, endPosition.row, endPosition.column) }];
+      }
+      logToClient(`[Definition SameFileFallback] '${wordAtCursor}' not found as a macro in the current file.`);
     }
 
     logToClient(`[Definition] No definition found for '${wordAtCursor || 'cursor position'}'.`);
@@ -580,7 +531,7 @@ connection.onHover(
             try {
               info = JSON.parse(result.stdout);
               performedImportedMacroHover = true;
-            } catch {
+            } catch (e) {
               logToClient(`[HoverImportedName Parse ERROR] ${result.stdout}`);
             }
           }
@@ -588,54 +539,58 @@ connection.onHover(
       }
     }
 
-    // Priority 3: Default hover (stub, then current file for non-imported macro)
-    if (!performedImportedMacroHover) {
-      const stubPath = (() => {
-        const path = require('path');
-        const dir = path.dirname(templatePath);
-        const base = path.basename(templatePath, '.jinja');
-        return path.join(dir, '__pycache__', base + '.pyi');
-      })();
-      // Only proceed if stubPath exists, otherwise, no info for default hover.
-      if (fs.existsSync(stubPath)) { 
-        const line = _params.position?.line ?? 0;
-        const character = _params.position?.character ?? 0;
-        const args = ['-m', 'typedjinja.lsp_server', 'hover', stubPath, word, String(line), String(character), templatePath];
-        logToClient(`[HoverDefault] Invoking: ${pythonExec} ${args.join(' ')}`);
-        result = spawnSync(pythonExec, args, { encoding: 'utf8' });
-        if (result.error || result.stderr) {
-          logToClient(`[HoverDefault ERROR] ${result.error ?? result.stderr}`);
-        } else {
-          try {
-            info = JSON.parse(result.stdout);
-          } catch {
-            logToClient(`[HoverDefault Parse ERROR] ${result.stdout}`);
-          }
-        }
-      } else {
-        logToClient(`[HoverDefault] Stub path ${stubPath} does not exist. Skipping default hover.`);
-      }
+    if (performedImportedMacroHover) {
+      // Show signature and documentation for imported macros
+      const contents = '```python\n' + word + ': ' + (info.type || '') + '\n```' + (info.doc ? '\n\n' + info.doc : '');
+      return { contents: { kind: MarkupKind.Markdown, value: contents } };
     }
 
-    if (!info.type) {
-        logToClient(`[Hover Result] No type information found for '${word}'. Final info: ${JSON.stringify(info)}`);
-        return null;
+    // Add default hover logic
+    const stubPath = (() => {
+      const p = require('path');
+      const dir = p.dirname(templatePath);
+      const base = p.basename(templatePath, '.jinja');
+      return p.join(dir, '__pycache__', base + '.pyi');
+    })();
+    if (fs.existsSync(stubPath)) {
+      const line = _params.position.line;
+      const character = _params.position.character;
+      const args = ['-m', 'typedjinja.lsp_server', 'hover', stubPath, word, String(line), String(character), templatePath];
+      logToClient(`[HoverDefault] Invoking: ${pythonExec} ${args.join(' ')}`);
+      result = spawnSync(pythonExec, args, { encoding: 'utf8' });
+      if (result.error) {
+        logToClient(`[HoverDefault ERROR] ${result.error}`);
+      } else if (result.stderr && result.stderr.trim() !== '') {
+        logToClient(`[HoverDefault STDERR] ${result.stderr}`);
+      } else if (result.stdout) {
+        try {
+          info = JSON.parse(result.stdout);
+        } catch (e) {
+          logToClient(`[HoverDefault Parse ERROR] ${result.stdout}`);
+        }
+      }
+    } else {
+      logToClient(`[HoverDefault] Stub path ${stubPath} does not exist. Skipping default hover.`);
     }
-    const contents = '```python\n' + word + ': ' + info.type + '\n```' + (info.doc ? '\n\n' + info.doc : '');
-    return { contents: { kind: MarkupKind.Markdown, value: contents } };
+    if (!info.type) {
+      logToClient(`[HoverDefault] No type info found for '${word}'.`);
+      return null;
+    }
+    const hoverContents = '```python\n' + word + ': ' + info.type + '\n```' + (info.doc ? '\n\n' + info.doc : '');
+    return { contents: { kind: MarkupKind.Markdown, value: hoverContents } };
   }
 );
 
-// Helper to run diagnostics and send results
+// Diagnostics handler
 async function runDiagnostics(doc: TextDocument) {
   if (!doc) return;
   logToClient(`[Diagnostics] Triggered for: ${doc.uri}`);
   const templatePath = url.fileURLToPath(doc.uri);
   logToClient(`[Diagnostics] Template path: ${templatePath}`);
   const stubPath = (() => {
-    const path = require('path'),
-      dir = path.dirname(templatePath),
-      base = path.basename(templatePath, '.jinja');
+    const path = require('path');
+    const dir = path.dirname(templatePath);
+    const base = path.basename(templatePath, '.jinja');
     return path.join(dir, '__pycache__', base + '.pyi');
   })();
   logToClient(`[Diagnostics] Stub path: ${stubPath}`);
@@ -673,25 +628,25 @@ async function runDiagnostics(doc: TextDocument) {
         start: { line: d.line, character: d.col },
         end: { line: d.end_line, character: d.end_col },
       },
-      severity: 1, // Error
+      severity: 1,
       source: 'typedjinja',
     })),
   });
 }
 
-documents.onDidChangeContent(async (change: { document: TextDocument }) => {
+// Watch for template content changes
+documents.onDidChangeContent(async (change) => {
   await runDiagnostics(change.document);
 });
 
-documents.onDidOpen(async (change: { document: TextDocument }) => {
+documents.onDidOpen(async (change) => {
   await runDiagnostics(change.document);
 });
 
-// After runDiagnostics, before documents.listen(connection):
+// Watch for stub file changes
 connection.onDidChangeWatchedFiles((params) => {
   logToClient(`[LSP] Watched files changed: ${JSON.stringify(params.changes)}`);
   for (const change of params.changes) {
-    // If a stub file was created or changed, re-run diagnostics on the corresponding template
     if ((change.type === FileChangeType.Created || change.type === FileChangeType.Changed) && change.uri.endsWith('.pyi')) {
       const stubFs = url.fileURLToPath(change.uri);
       const path = require('path');
@@ -707,5 +662,6 @@ connection.onDidChangeWatchedFiles((params) => {
   }
 });
 
+// Start listening
 documents.listen(connection);
 connection.listen();
