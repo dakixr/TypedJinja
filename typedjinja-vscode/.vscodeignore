@@ -1,8 +1,14 @@
+.vscode/
+node_modules/
+src/
+lib/
+tsconfig.json
+esbuild.js
 **/*.ts
-**/tsconfig.json
+**/*.map
+pnpm-lock.yaml
+yarn.lock
 // **/node_modules/**
 **/.git/**
 **/.vscode/**
-**/test/**
-**/*.map
-pnpm-lock.yaml 
+**/test/** 

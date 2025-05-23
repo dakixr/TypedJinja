@@ -2,7 +2,7 @@
   "name": "typedjinja-vscode",
   "displayName": "TypedJinja",
   "description": "LSP support for type-safe Jinja2 templates using TypedJinja.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "dakixr",
   "engines": {
     "vscode": "^1.80.0"
@@ -10,7 +10,7 @@
   "categories": [
     "Programming Languages"
   ],
-  "main": "./lib/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "languages": [
       {
@@ -42,18 +42,24 @@
     "onLanguage:jinja"
   ],
   "scripts": {
-    "vscode:prepublish": "tsc -p ./",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "check-types": "tsc --noEmit",
+    "compile": "npm run check-types && node esbuild.js",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "watch": "npm-run-all -p watch:*",
+    "package": "npm run check-types && node esbuild.js --production",
+    "vscode:prepublish": "npm run package"
   },
   "devDependencies": {
     "@types/node": "^22.15.19",
     "@types/vscode": "^1.80.0",
+    "esbuild": "^0.25.4",
+    "npm-run-all": "^4.1.5",
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "toml": "^3.0.0",
     "@vscode/vsce": "^3.4.2",
+    "toml": "^3.0.0",
     "vscode-languageclient": "^9.0.1"
   },
   "license": "MIT",

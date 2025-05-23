@@ -17,13 +17,23 @@ A lightweight Python type system for Jinja2 templates with LSP features.
 - Download the latest `.vsix` from the releases or build it yourself:
   ```sh
   pnpm install
-  pnpm run vscode:prepublish
+  pnpm run package
   pnpm dlx vsce package
   ```
 - In VSCode, open the Extensions view, click the three dots, and select 'Install from VSIX...'
 
 ## Usage
 Open any `.jinja` or `.html` file to activate the extension.
+
+## Configuration
+By default, the extension scans for Jinja2 templates in the `templates` directory at the workspace root. To customize this location, add a `[tool.typedjinja]` section to your project's `pyproject.toml`:
+
+```toml
+[tool.typedjinja]
+templateRoot = "templates"  # path relative to workspace root
+```
+
+This setting tells the extension (and underlying language server) where to resolve template includes, macros, and imports.
 
 ## Development Workflow
 
@@ -50,7 +60,7 @@ To set up and work on the extension locally:
 4. Open the folder in VSCode and start the Extension Development Host (press `F5`).
 5. After development, build and package the VSIX:
    ```sh
-   pnpm run vscode:prepublish
+   pnpm run package
    pnpm dlx vsce package
    ```
 
