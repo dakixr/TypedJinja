@@ -1,0 +1,3 @@
+[tool.typedjinja]
+# Set the templates directory relative to this workspace root
+templateRoot = "templates" 

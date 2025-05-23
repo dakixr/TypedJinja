@@ -4,6 +4,8 @@ import { LanguageClient, LanguageClientOptions, ServerOptions } from 'vscode-lan
 import { exec } from 'child_process';
 import * as fs from 'fs';
 import * as process from 'process';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const toml = require('toml');
 
 let client: LanguageClient;
 export const outputChannel = vscode.window.createOutputChannel('TypedJinja');
@@ -36,21 +38,39 @@ export async function activate(context: vscode.ExtensionContext) {
   let templateRoot = '';
   if (workspaceFolders && workspaceFolders.length > 0) {
     const workspaceRoot = workspaceFolders[0].uri.fsPath;
-    // Search for .typedjinja config anywhere in the workspace
+    let templateRootCandidate = workspaceRoot;
+    const pyprojectPath = path.join(workspaceRoot, 'pyproject.toml');
+    if (fs.existsSync(pyprojectPath)) {
+      try {
+        const content = fs.readFileSync(pyprojectPath, 'utf8');
+        const parsed = toml.parse(content);
+        const rel = parsed.tool?.typedjinja?.templateRoot;
+        if (typeof rel === 'string') {
+          const byWorkspace = path.isAbsolute(rel) ? rel : path.join(workspaceRoot, rel);
+          if (fs.existsSync(byWorkspace)) {
+            templateRootCandidate = byWorkspace;
+          } else {
+            templateRootCandidate = path.dirname(pyprojectPath);
+          }
+        }
+      } catch (err: any) {
+        outputChannel.appendLine(`[Config Error] Could not parse pyproject.toml: ${err.message}`);
+      }
+    } else {
     const configFiles = await vscode.workspace.findFiles('**/.typedjinja', '**/node_modules/**', 1);
     if (configFiles.length > 0) {
       const configPath = configFiles[0].fsPath;
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       const rel = config.templateRoot;
-      // First try resolving relative to workspace root
       const byWorkspace = path.isAbsolute(rel) ? rel : path.join(workspaceRoot, rel);
       if (fs.existsSync(byWorkspace)) {
-        templateRoot = byWorkspace;
+          templateRootCandidate = byWorkspace;
       } else {
-        // Fallback to directory containing the config file
-        templateRoot = path.dirname(configPath);
+          templateRootCandidate = path.dirname(configPath);
+        }
       }
     }
+    templateRoot = templateRootCandidate;
   }
   // Path to the server module (now inside the extension)
   const serverModule = context.asAbsolutePath(
