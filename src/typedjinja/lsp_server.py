@@ -217,7 +217,19 @@ def main():
                 typ_obj = eval(var_type, ns)
             except Exception:
                 continue
-            if not hasattr(typ_obj, attr):
+            # Check for attribute in class annotations or dataclass_fields as instance attributes
+            has_attribute = hasattr(typ_obj, attr)
+            if not has_attribute and isinstance(typ_obj, type):
+                # dataclass fields and annotated attributes on the class
+                class_annotations = getattr(typ_obj, "__annotations__", {})
+                if attr in class_annotations:
+                    has_attribute = True
+                elif (
+                    hasattr(typ_obj, "__dataclass_fields__")
+                    and attr in typ_obj.__dataclass_fields__
+                ):
+                    has_attribute = True
+            if not has_attribute:
                 start_offset = m.start(0)
                 end_offset = m.end(0)
                 if end_offset < len(content) and content[end_offset] == "(":
