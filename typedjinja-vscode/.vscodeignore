@@ -1,14 +1,13 @@
 .vscode/
-node_modules/
 src/
-lib/
+rollup.config.js
 tsconfig.json
-esbuild.js
 **/*.ts
 **/*.map
 pnpm-lock.yaml
 yarn.lock
-// **/node_modules/**
 **/.git/**
 **/.vscode/**
-**/test/** 
+**/test/**
+# Include compiled extension code
+!lib/**
